@@ -1,0 +1,30 @@
+#include <windows.h>
+
+// IDI_ICON1	ICON	DISCARDABLE	"MyApp.ico"
+
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "acd2lr.exe.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+  FILEVERSION 0,1,0,0
+  PRODUCTVERSION 0,1,0,0
+  BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+      BLOCK "040c04b0"
+      BEGIN
+        VALUE "CompanyName", "https://vtavernier.github.io/\0"
+        VALUE "FileDescription", "ACDSee to Lightroom metadata converter\0"
+        VALUE "FileVersion", "0.1.0.0\0"
+        VALUE "LegalCopyright", "Copyright 2021 Vincent Tavernier\0"
+        VALUE "OriginalFilename", "acd2lr.exe\0"
+        VALUE "ProductName", "acd2lr\0"
+        VALUE "ProductVersion", "0.1.0.0\0"
+      END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+      VALUE "Translation", 0x040c, 1200
+    END
+  END
+
+// vim: ft=rc:ts=2:et:sw=2

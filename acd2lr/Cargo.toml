@@ -1,0 +1,25 @@
+[package]
+name = "acd2lr"
+version = "0.1.0"
+authors = ["Vincent Tavernier <vince.tavernier@gmail.com>"]
+edition = "2018"
+build = "build.rs"
+
+[dependencies]
+acd2lr-core = { path = "../acd2lr-core" }
+
+color-eyre = "0.5"
+tracing = "0.1"
+tracing-subscriber = "0.2"
+tracing-error = "0.1"
+paw = "1.0"
+structopt = { version = "0.3", features = ["paw"] }
+thiserror = "1.0"
+
+gtk = { version = "0.9", features = ["v3_24"] }
+gio = "0.9"
+glib = "0.10"
+gdk-pixbuf = "0.9"
+
+[build-dependencies]
+embed-resource = "1.6"

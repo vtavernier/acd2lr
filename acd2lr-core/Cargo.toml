@@ -1,0 +1,10 @@
+[package]
+name = "acd2lr-core"
+version = "0.1.0"
+authors = ["Vincent Tavernier <vince.tavernier@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+thiserror = "1.0"
+tracing = "0.1"
+xml-rs = "0.8"
