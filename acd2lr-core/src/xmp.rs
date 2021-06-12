@@ -1,91 +1,119 @@
-use std::convert::TryFrom;
+use serde::Serialize;
 use thiserror::Error;
 
-#[derive(Debug, Clone, Copy)]
-pub struct XPacket<'p> {
-    pub header: &'p [u8],
-    pub body: &'p [u8],
-    pub footer: &'p [u8],
-}
+use crate::{FromAcdSee, TagHierarchy};
 
-#[derive(Debug)]
-pub struct XPacketMut<'p> {
-    pub header: &'p mut [u8],
-    pub body: &'p mut [u8],
-    pub footer: &'p mut [u8],
+#[derive(Debug, Clone)]
+pub struct XmpData {
+    events: Vec<xml::reader::XmlEvent>,
 }
 
 #[derive(Debug, Error)]
-pub enum XPacketParseError {
-    #[error("missing xpacket header")]
-    MissingHeader,
-    #[error("missing xpacket footer")]
-    MissingFooter,
-    #[error("missing xpacket header boundary")]
-    MissingHeaderBoundary,
-    #[error("missing xpacket footer boundary")]
-    MissingFooterBoundary,
+pub enum XmpParseError {
+    #[error(transparent)]
+    Xml(#[from] xml::reader::Error),
 }
 
-fn get_offsets(value: &[u8]) -> Result<(usize, usize), XPacketParseError> {
-    // Check we actually have an xpacket header
-    if !value.starts_with(b"<?xpacket begin=") {
-        return Err(XPacketParseError::MissingHeader);
-    }
-
-    // Check we have a footer at the end
-    if !value.ends_with(b"<?xpacket end=\"w\"?>") {
-        return Err(XPacketParseError::MissingFooter);
-    }
-
-    // Now find the first newline: this is the header boundary
-    let body_start = value
-        .iter()
-        .enumerate()
-        .find(|(_, x)| **x == b'\n')
-        .map(|(i, _)| i + 1)
-        .ok_or_else(|| XPacketParseError::MissingHeaderBoundary)?;
-
-    // The last newline is the footer boundary
-    let body_end = value
-        .iter()
-        .rev()
-        .enumerate()
-        .find(|(_, x)| **x == b'\n')
-        .map(|(i, _)| i + 1)
-        .ok_or_else(|| XPacketParseError::MissingFooterBoundary)?;
-
-    Ok((body_start, body_end))
+#[derive(Default, Debug, Clone, Serialize)]
+pub struct AcdSeeData {
+    caption: String,
+    datetime: Option<chrono::NaiveDateTime>,
+    author: String,
+    rating: i32,
+    notes: String,
+    tagged: bool,
+    categories: TagHierarchy,
+    collections: String,
 }
 
-impl<'p> TryFrom<&'p [u8]> for XPacket<'p> {
-    type Error = XPacketParseError;
+#[derive(Debug, Error)]
+pub enum AcdSeeError {
+    #[error(transparent)]
+    Xml(#[from] xml::reader::Error),
+    #[error(transparent)]
+    Date(#[from] chrono::ParseError),
+}
 
-    fn try_from(value: &'p [u8]) -> Result<Self, Self::Error> {
-        let (body_start, body_end) = get_offsets(value)?;
-        let (header, body_footer) = value.split_at(body_start);
-        let (body, footer) = body_footer.split_at(body_end - body_start);
-
+impl XmpData {
+    pub fn parse(source: &[u8]) -> Result<XmpData, XmpParseError> {
         Ok(Self {
-            header,
-            body,
-            footer,
+            events: crate::xml_reader(source)
+                .into_iter()
+                .collect::<Result<_, _>>()?,
         })
     }
-}
 
-impl<'p> TryFrom<&'p mut [u8]> for XPacketMut<'p> {
-    type Error = XPacketParseError;
+    fn acdsee_attr_value(&self, local_name: &str) -> Option<String> {
+        self.events.iter().find_map(|evt| {
+            if let xml::reader::XmlEvent::StartElement {
+                name, attributes, ..
+            } = evt
+            {
+                if name.namespace.as_deref() == Some(crate::ns::RDF)
+                    && name.local_name == "Description"
+                {
+                    return attributes.iter().find_map(|attr| {
+                        if attr.name.namespace.as_deref() == Some(crate::ns::ACDSEE)
+                            && attr.name.local_name == local_name
+                        {
+                            return Some(attr.value.to_owned());
+                        }
 
-    fn try_from(value: &'p mut [u8]) -> Result<Self, Self::Error> {
-        let (body_start, body_end) = get_offsets(value)?;
-        let (header, body_footer) = value.split_at_mut(body_start);
-        let (body, footer) = body_footer.split_at_mut(body_end - body_start);
+                        None
+                    });
+                }
+            }
 
-        Ok(Self {
-            header,
-            body,
-            footer,
+            None
+        })
+    }
+
+    fn acdsee_tag_value(&self, local_name: &str) -> String {
+        let result = self.acdsee_attr_value(local_name).unwrap_or_else(|| {
+            self.events
+                .iter()
+                .skip_while(|evt| {
+                    // Look for the right StartElement
+                    if let xml::reader::XmlEvent::StartElement { name, .. } = evt {
+                        !(name.namespace.as_deref() == Some(crate::ns::ACDSEE)
+                            && name.local_name == local_name)
+                    } else {
+                        true
+                    }
+                })
+                .skip(1)
+                .next()
+                .and_then(|evt| {
+                    if let xml::reader::XmlEvent::Characters(value) = evt {
+                        Some(value.to_owned())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(String::new)
+        });
+
+        tracing::trace!(value = %result, "acdsee tag {}", local_name);
+        result
+    }
+
+    pub fn acdsee_data(&self) -> Result<AcdSeeData, AcdSeeError> {
+        Ok(AcdSeeData {
+            caption: self.acdsee_tag_value("caption"),
+            categories: TagHierarchy::from_acdsee(&self.acdsee_tag_value("categories"))?,
+            datetime: {
+                let datetime = self.acdsee_tag_value("datetime");
+                if datetime.is_empty() {
+                    None
+                } else {
+                    Some(datetime.parse()?)
+                }
+            },
+            author: self.acdsee_tag_value("author"),
+            rating: self.acdsee_tag_value("rating").parse().ok().unwrap_or(0),
+            notes: self.acdsee_tag_value("notes"),
+            tagged: self.acdsee_tag_value("tagged").to_ascii_lowercase() == "true",
+            collections: self.acdsee_tag_value("collections"),
         })
     }
 }
