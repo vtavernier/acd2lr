@@ -2,12 +2,22 @@
 <!-- Generated with glade 3.38.2 -->
 <interface>
   <requires lib="gtk+" version="3.24"/>
-  <object class="GtkFileChooserNative" id="filechooser">
+  <object class="GtkFileChooserNative" id="filechooser_folder">
+    <property name="action">select-folder</property>
     <property name="select-multiple">True</property>
     <property name="modal">True</property>
   </object>
-  <object class="GtkFileChooserNative" id="filechooser_folder">
-    <property name="action">select-folder</property>
+  <object class="GtkFileFilter" id="filefilter">
+    <patterns>
+      <pattern>*.jpeg</pattern>
+      <pattern>*.jpg</pattern>
+      <pattern>*.tif</pattern>
+      <pattern>*.tiff</pattern>
+      <pattern>*.xmp</pattern>
+    </patterns>
+  </object>
+  <object class="GtkFileChooserNative" id="filechooser">
+    <property name="filter">filefilter</property>
     <property name="select-multiple">True</property>
     <property name="modal">True</property>
   </object>
