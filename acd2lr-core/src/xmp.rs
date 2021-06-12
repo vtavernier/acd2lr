@@ -16,14 +16,35 @@ pub enum XmpParseError {
 
 #[derive(Default, Debug, Clone, Serialize)]
 pub struct AcdSeeData {
-    caption: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    caption: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     datetime: Option<chrono::NaiveDateTime>,
-    author: String,
-    rating: i32,
-    notes: String,
-    tagged: bool,
-    categories: TagHierarchy,
-    collections: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    author: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rating: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notes: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tagged: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    categories: Option<TagHierarchy>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    collections: Option<String>,
+}
+
+impl AcdSeeData {
+    pub fn is_empty(&self) -> bool {
+        self.caption.is_none()
+            && self.datetime.is_none()
+            && self.author.is_none()
+            && self.rating.is_none()
+            && self.notes.is_none()
+            && self.tagged.is_none()
+            && self.categories.is_none()
+            && self.collections.is_none()
+    }
 }
 
 #[derive(Debug, Error)]
@@ -68,8 +89,8 @@ impl XmpData {
         })
     }
 
-    fn acdsee_tag_value(&self, local_name: &str) -> String {
-        let result = self.acdsee_attr_value(local_name).unwrap_or_else(|| {
+    fn acdsee_tag_value(&self, local_name: &str) -> Option<String> {
+        let result = self.acdsee_attr_value(local_name).or_else(|| {
             self.events
                 .iter()
                 .skip_while(|evt| {
@@ -83,36 +104,37 @@ impl XmpData {
                 })
                 .skip(1)
                 .next()
-                .and_then(|evt| {
-                    if let xml::reader::XmlEvent::Characters(value) = evt {
-                        Some(value.to_owned())
-                    } else {
-                        None
-                    }
+                .and_then(|evt| match evt {
+                    xml::reader::XmlEvent::EndElement { .. } => Some(String::new()),
+                    xml::reader::XmlEvent::Characters(value) => Some(value.to_owned()),
+                    _ => None,
                 })
-                .unwrap_or_else(String::new)
         });
 
-        tracing::trace!(value = %result, "acdsee tag {}", local_name);
+        tracing::trace!(value = ?result, "acdsee tag {}", local_name);
         result
     }
 
     pub fn acdsee_data(&self) -> Result<AcdSeeData, AcdSeeError> {
         Ok(AcdSeeData {
             caption: self.acdsee_tag_value("caption"),
-            categories: TagHierarchy::from_acdsee(&self.acdsee_tag_value("categories"))?,
-            datetime: {
-                let datetime = self.acdsee_tag_value("datetime");
-                if datetime.is_empty() {
-                    None
-                } else {
-                    Some(datetime.parse()?)
-                }
-            },
+            categories: self
+                .acdsee_tag_value("categories")
+                .map(|value| TagHierarchy::from_acdsee(&value))
+                .transpose()?,
+            datetime: self
+                .acdsee_tag_value("datetime")
+                .and_then(|val| if val.is_empty() { None } else { Some(val) })
+                .map(|val| val.parse())
+                .transpose()?,
             author: self.acdsee_tag_value("author"),
-            rating: self.acdsee_tag_value("rating").parse().ok().unwrap_or(0),
+            rating: self
+                .acdsee_tag_value("rating")
+                .map(|value| value.parse().ok().unwrap_or(0)),
             notes: self.acdsee_tag_value("notes"),
-            tagged: self.acdsee_tag_value("tagged").to_ascii_lowercase() == "true",
+            tagged: self
+                .acdsee_tag_value("tagged")
+                .map(|value| value.to_ascii_lowercase() == "true"),
             collections: self.acdsee_tag_value("collections"),
         })
     }
