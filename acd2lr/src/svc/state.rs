@@ -5,7 +5,7 @@ use std::{
 };
 use thiserror::Error;
 
-pub const SUPPORTED_EXTS: &[&str] = &["jpeg", "jpg", "tif", "tiff", "xmp"];
+pub const SUPPORTED_EXTS: &[&str] = &["jpeg", "jpg", "tif", "tiff", "xmp", "xpacket"];
 
 #[derive(Debug)]
 pub struct File {
