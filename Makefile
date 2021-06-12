@@ -23,7 +23,12 @@ build-windows-release:
 		mingw-strip target/$(WINDOWS_TRIPLE)/release/$(BINARY_NAME).exe && \
 		./tools/copy-deps.sh target/$(WINDOWS_TRIPLE)/release/$(BINARY_NAME).exe
 
+package-windows: installer.exe
+
+installer.exe: installer.nsi
+	makensis -DINSTALLSIZE=$$(du -s -b $(patsubst %,target/$(WINDOWS_TRIPLE)/release/%,bin etc lib share) | awk '{sum+=$$1} END{print int(sum/1024)}') $^
+
 clean:
 	cargo clean
 
-.PHONY: all build-windows build-windows-release
+.PHONY: all build-windows build-windows-release package-windows
