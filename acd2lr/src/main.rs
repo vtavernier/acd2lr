@@ -21,6 +21,7 @@ impl App {
     fn run(self) -> Result<()> {
         use gio::prelude::*;
         use gtk::prelude::*;
+        use gdk_pixbuf::prelude::*;
 
         use gtk::{Application, ApplicationWindow, MenuItem, Statusbar};
 
@@ -43,6 +44,20 @@ impl App {
                 let window: ApplicationWindow = builder
                     .get_object("main_window")
                     .expect("failed to load main window");
+
+                // Set window icon
+                {
+                    let icon_loader = gdk_pixbuf::PixbufLoader::new();
+                    icon_loader.write(include_bytes!("../app.png")).unwrap();
+                    icon_loader.close().unwrap();
+
+                    if let Some(icon) = icon_loader.get_pixbuf() {
+                        window.set_icon(Some(&icon));
+                    } else {
+                        warn!("no icon set");
+                    }
+                }
+
 
                 let filechooser: gtk::FileChooserNative =
                     builder.get_object("filechooser").unwrap();
