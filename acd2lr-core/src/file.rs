@@ -1,9 +1,8 @@
 use std::{
-    fs::{File, OpenOptions},
+    fs::File,
     io::BufReader,
     io::{prelude::*, SeekFrom},
     ops::Range,
-    path::Path,
 };
 
 use thiserror::Error;
