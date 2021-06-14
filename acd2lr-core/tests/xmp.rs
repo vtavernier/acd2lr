@@ -1,4 +1,8 @@
-use acd2lr_core::{file::XPacketFile, xmp::XmpData, xpacket::XPacket};
+use acd2lr_core::{
+    file::XPacketFile,
+    xmp::{rules, XmpData},
+    xpacket::XPacket,
+};
 use std::{convert::TryFrom, fs::File, io::prelude::*, path::Path};
 use test_env_log::test;
 
@@ -58,9 +62,13 @@ fn test_rewrite(p: impl AsRef<Path>) {
 
     let xmp = XmpData::parse(packet.body).unwrap();
 
-    let events = xmp.write_events();
+    let mut rules = vec![rules::xmp_metadata_date()];
+    rules.extend(xmp.acdsee_data().unwrap().to_ruleset());
+    let events = xmp.write_events(rules);
 
     eprintln!("after: ");
+
+    let events = events.unwrap();
 
     let mut out = Vec::with_capacity(packet.body.len());
     let mut writer = xml::writer::EventWriter::new_with_config(

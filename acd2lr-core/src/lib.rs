@@ -21,6 +21,14 @@ fn xml_reader<R: std::io::Read>(reader: R) -> xml::EventReader<R> {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct Tag(Vec<String>);
 
+impl std::ops::Deref for Tag {
+    type Target = Vec<String>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 /// A tag hierarchy
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct TagHierarchy(HashSet<Tag>);
@@ -83,5 +91,13 @@ impl TagHierarchy {
         }
 
         Ok(Self(set))
+    }
+}
+
+impl std::ops::Deref for TagHierarchy {
+    type Target = HashSet<Tag>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }

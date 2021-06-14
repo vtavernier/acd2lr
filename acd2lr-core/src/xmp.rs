@@ -1,9 +1,15 @@
+use std::collections::HashMap;
+
 use thiserror::Error;
+use xml::name::OwnedName;
 
 use crate::{
     acdsee::{AcdSeeData, AcdSeeError},
     TagHierarchy,
 };
+
+mod rule;
+pub use rule::*;
 
 #[derive(Debug, Clone)]
 pub struct XmpData {
@@ -76,6 +82,37 @@ impl XmpData {
         result
     }
 
+    fn acdsee_bag_value(&self, local_name: &str) -> Vec<String> {
+        self.events
+            .iter()
+            .skip_while(|evt| {
+                // Look for the right StartElement
+                if let xml::reader::XmlEvent::StartElement { name, .. } = evt {
+                    !(name.namespace.as_deref() == Some(crate::ns::ACDSEE)
+                        && name.local_name == local_name)
+                } else {
+                    true
+                }
+            })
+            .take_while(|evt| {
+                // Look for the right EndElement
+                if let xml::reader::XmlEvent::EndElement { name, .. } = evt {
+                    !(name.namespace.as_deref() == Some(crate::ns::ACDSEE)
+                        && name.local_name == local_name)
+                } else {
+                    true
+                }
+            })
+            .filter_map(|item| {
+                if let xml::reader::XmlEvent::Characters(chs) = item {
+                    Some(chs.to_owned())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     pub fn acdsee_data(&self) -> Result<AcdSeeData, AcdSeeError> {
         Ok(AcdSeeData {
             caption: self.acdsee_tag_value("caption"),
@@ -97,10 +134,14 @@ impl XmpData {
                 .acdsee_tag_value("tagged")
                 .map(|value| value.to_ascii_lowercase() == "true"),
             collections: self.acdsee_tag_value("collections"),
+            keywords: self.acdsee_bag_value("keywords"),
         })
     }
 
-    pub fn write_events(&self) -> Vec<xml::reader::XmlEvent> {
+    pub fn write_events(
+        &self,
+        rules: Vec<RewriteRule>,
+    ) -> Result<Vec<xml::reader::XmlEvent>, WriteError> {
         let mut evts = Vec::with_capacity(self.events.len());
 
         // Find all namespaces
@@ -123,6 +164,21 @@ impl XmpData {
             }
         }
 
+        // Add all rule namespaces
+        for rule in &rules {
+            if let Some(namespace) = rule.namespace() {
+                if !all_namespaces.contains(rule.prefix()) {
+                    all_namespaces.put(rule.prefix(), namespace);
+                }
+            }
+        }
+
+        // Add all rules to a hash map to speed up lookups
+        let mut rules: HashMap<_, _> = rules
+            .into_iter()
+            .map(|rule| ((rule.namespace(), rule.local_name()), rule))
+            .collect();
+
         enum State {
             Init,
             InDescription,
@@ -131,7 +187,9 @@ impl XmpData {
 
         let mut state = State::Init;
         let mut pending_end_element = None;
-        for evt in &self.events {
+        let mut evt_iter = self.events.iter();
+
+        while let Some(evt) = evt_iter.next() {
             match state {
                 State::Init => {
                     match evt {
@@ -149,7 +207,8 @@ impl XmpData {
 
                             state = State::InDescription;
                         }
-                        xml::reader::XmlEvent::StartDocument { .. } => { // Just skip this
+                        xml::reader::XmlEvent::StartDocument { .. } => {
+                            // Just skip this
                         }
                         other => {
                             evts.push(other.clone());
@@ -164,7 +223,46 @@ impl XmpData {
                         {
                             // Finishing a description node
                             state = State::SkipDescription;
-                            pending_end_element = Some(evt.clone());
+                            pending_end_element = Some((*evt).clone());
+                        }
+                        xml::reader::XmlEvent::StartElement { name, .. } => {
+                            let id = (name.namespace.as_deref(), name.local_name.as_str());
+                            if let Some(rule) = rules.get(&id) {
+                                if rule.matches(&name.borrow()) {
+                                    // Buffer all events
+                                    let mut rule_events = Vec::with_capacity(6);
+                                    rule_events.push(evt);
+
+                                    let mut level = 1;
+                                    while level > 0 {
+                                        if let Some(evt) = evt_iter.next() {
+                                            match evt {
+                                                xml::reader::XmlEvent::StartElement { .. } => {
+                                                    level += 1;
+                                                }
+                                                xml::reader::XmlEvent::EndElement { .. } => {
+                                                    level -= 1;
+                                                }
+                                                _ => {}
+                                            }
+
+                                            rule_events.push(evt);
+                                        } else {
+                                            break;
+                                        }
+                                    }
+
+                                    evts.extend(
+                                        rule.run(&rule_events[..])
+                                            .map_err(|_| WriteError::RuleFailed(rule.name()))?
+                                            .into_iter(),
+                                    );
+                                    rules.remove(&id);
+                                    continue;
+                                }
+                            }
+
+                            evts.push(evt.clone());
                         }
                         other => {
                             evts.push(other.clone());
@@ -173,17 +271,26 @@ impl XmpData {
                 }
                 State::SkipDescription => {
                     match evt {
-                        xml::reader::XmlEvent::StartElement { name, .. } => {
+                        xml::reader::XmlEvent::StartElement { name, .. }
                             if name.namespace.as_deref() == Some(crate::ns::RDF)
-                                && name.local_name == "Description"
-                            {
-                                // Start description, we're skipping this
-                                state = State::InDescription;
-                                pending_end_element.take();
-                            }
+                                && name.local_name == "Description" =>
+                        {
+                            // Start description, we're skipping this
+                            state = State::InDescription;
+                            pending_end_element.take();
                         }
                         other => {
                             if let Some(evt) = pending_end_element.take() {
+                                // Before we close the rdf:Description, we need to make sure we ran
+                                // all rules
+                                for (_, rule) in rules.drain() {
+                                    evts.extend(
+                                        rule.run(&[])
+                                            .map_err(|_| WriteError::RuleFailed(rule.name()))?
+                                            .into_iter(),
+                                    );
+                                }
+
                                 evts.push(evt);
                             }
 
@@ -194,6 +301,12 @@ impl XmpData {
             }
         }
 
-        evts
+        Ok(evts)
     }
+}
+
+#[derive(Debug, Error)]
+pub enum WriteError {
+    #[error("rule failed for node {:?}", 0)]
+    RuleFailed(OwnedName),
 }

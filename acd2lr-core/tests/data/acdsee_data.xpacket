@@ -14,6 +14,11 @@
    <acdsee:tagged>False</acdsee:tagged>
    <acdsee:categories>&lt;Categories&gt;&lt;Category Assigned="0"&gt;Vacances&lt;Category Assigned="1"&gt;Allos&lt;/Category&gt;&lt;/Category&gt;&lt;/Categories&gt;</acdsee:categories>
    <acdsee:collections/>
+   <acdsee:keywords>
+     <rdf:Bag>
+       <rdf:li>Kw1</rdf:li>
+     </rdf:Bag>
+   </acdsee:keywords>
   </rdf:Description>
  </rdf:RDF>
 </x:xmpmeta>
