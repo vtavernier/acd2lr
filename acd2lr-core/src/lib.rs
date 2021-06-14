@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use serde::Serialize;
 
+pub mod acdsee;
 pub mod file;
 pub mod ns;
 pub mod xmp;
@@ -24,10 +25,12 @@ pub struct Tag(Vec<String>);
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct TagHierarchy(HashSet<Tag>);
 
-impl FromAcdSee for TagHierarchy {
-    type Error = xml::reader::Error;
+impl TagHierarchy {
+    pub fn new() -> Self {
+        Self::default()
+    }
 
-    fn from_acdsee(value: &str) -> Result<Self, Self::Error> {
+    pub fn from_acdsee_categories(value: &str) -> Result<Self, xml::reader::Error> {
         if value.is_empty() {
             return Ok(Self::default());
         }
@@ -81,16 +84,4 @@ impl FromAcdSee for TagHierarchy {
 
         Ok(Self(set))
     }
-}
-
-impl TagHierarchy {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-pub trait FromAcdSee: Sized {
-    type Error;
-
-    fn from_acdsee(value: &str) -> Result<Self, Self::Error>;
 }

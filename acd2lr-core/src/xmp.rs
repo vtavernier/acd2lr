@@ -1,7 +1,9 @@
-use serde::Serialize;
 use thiserror::Error;
 
-use crate::{FromAcdSee, TagHierarchy};
+use crate::{
+    acdsee::{AcdSeeData, AcdSeeError},
+    TagHierarchy,
+};
 
 #[derive(Debug, Clone)]
 pub struct XmpData {
@@ -12,47 +14,6 @@ pub struct XmpData {
 pub enum XmpParseError {
     #[error(transparent)]
     Xml(#[from] xml::reader::Error),
-}
-
-#[derive(Default, Debug, Clone, Serialize)]
-pub struct AcdSeeData {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    caption: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    datetime: Option<chrono::NaiveDateTime>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    author: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    rating: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    notes: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tagged: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    categories: Option<TagHierarchy>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    collections: Option<String>,
-}
-
-impl AcdSeeData {
-    pub fn is_empty(&self) -> bool {
-        self.caption.is_none()
-            && self.datetime.is_none()
-            && self.author.is_none()
-            && self.rating.is_none()
-            && self.notes.is_none()
-            && self.tagged.is_none()
-            && self.categories.is_none()
-            && self.collections.is_none()
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum AcdSeeError {
-    #[error(transparent)]
-    Xml(#[from] xml::reader::Error),
-    #[error(transparent)]
-    Date(#[from] chrono::ParseError),
 }
 
 impl XmpData {
@@ -120,7 +81,7 @@ impl XmpData {
             caption: self.acdsee_tag_value("caption"),
             categories: self
                 .acdsee_tag_value("categories")
-                .map(|value| TagHierarchy::from_acdsee(&value))
+                .map(|value| TagHierarchy::from_acdsee_categories(&value))
                 .transpose()?,
             datetime: self
                 .acdsee_tag_value("datetime")
