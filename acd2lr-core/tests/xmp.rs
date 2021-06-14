@@ -1,5 +1,5 @@
-use acd2lr_core::{xmp::XmpData, xpacket::XPacket};
-use std::convert::TryFrom;
+use acd2lr_core::{file::XPacketFile, xmp::XmpData, xpacket::XPacket};
+use std::{convert::TryFrom, fs::File, io::prelude::*, path::Path};
 use test_env_log::test;
 
 fn test_xpacket(val: &[u8]) -> XPacket {
@@ -42,4 +42,72 @@ fn test_xmp_acdsee() {
 #[test]
 fn test_xmp_lightroom() {
     test_xmp(&include_bytes!("data/lightroom_data.xpacket")[..]);
+}
+
+fn test_rewrite(p: impl AsRef<Path>) {
+    let packet = XPacketFile::open(File::open(p.as_ref()).unwrap())
+        .unwrap()
+        .read_packet_bytes()
+        .unwrap()
+        .unwrap();
+    let packet = XPacket::try_from(&packet[..]).unwrap();
+
+    eprint!("before: ");
+    std::io::stderr().write_all(&packet.body).unwrap();
+    eprintln!();
+
+    let xmp = XmpData::parse(packet.body).unwrap();
+
+    let events = xmp.write_events();
+
+    eprintln!("after: ");
+
+    let mut out = Vec::with_capacity(packet.body.len());
+    let mut writer = xml::writer::EventWriter::new_with_config(
+        &mut out,
+        xml::writer::EmitterConfig::new()
+            .perform_indent(true)
+            .indent_string(" ")
+            .write_document_declaration(false),
+    );
+
+    for event in events {
+        if let Some(evt) = event.as_writer_event() {
+            writer.write(evt).unwrap();
+        }
+    }
+
+    std::io::stderr().write_all(&out[..]).unwrap();
+    eprintln!();
+
+    let trimmed_body = unsafe { String::from_utf8_unchecked(packet.body.to_vec()) };
+    let trimmed_body = trimmed_body.trim_end();
+    let padding = packet.body.len() - trimmed_body.len();
+
+    if out.len() > trimmed_body.len() {
+        let diff = out.len() - trimmed_body.len();
+        eprintln!("space lost: {} bytes", diff);
+
+        if diff < padding {
+            eprintln!("fits in padding, leftover: {} bytes", padding - diff);
+        } else {
+            eprintln!("does not fit in padding, extra: {} bytes", diff - padding);
+        }
+
+        assert!(diff < padding);
+    } else {
+        let diff = trimmed_body.len() - out.len();
+        eprintln!("space saved: {} bytes", diff);
+        eprintln!("padding left: {} bytes", padding + diff);
+    }
+}
+
+#[test]
+fn test_rewrite_single() {
+    test_rewrite("tests/data/test_cat.jpg");
+}
+
+#[test]
+fn test_rewrite_multi() {
+    test_rewrite("tests/data/test_cat_multi.jpg");
 }

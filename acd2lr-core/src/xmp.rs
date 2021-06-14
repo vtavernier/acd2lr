@@ -138,4 +138,101 @@ impl XmpData {
             collections: self.acdsee_tag_value("collections"),
         })
     }
+
+    pub fn write_events(&self) -> Vec<xml::reader::XmlEvent> {
+        let mut evts = Vec::with_capacity(self.events.len());
+
+        // Find all namespaces
+        let mut all_namespaces = xml::namespace::Namespace::empty();
+        for evt in &self.events {
+            match evt {
+                xml::reader::XmlEvent::StartElement {
+                    name,
+                    attributes: _,
+                    namespace,
+                } => {
+                    if name.namespace.as_deref() == Some(crate::ns::RDF)
+                        && name.local_name == "Description"
+                    {
+                        // A rdf::Description start
+                        all_namespaces.extend(namespace.into_iter());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        enum State {
+            Init,
+            InDescription,
+            SkipDescription,
+        }
+
+        let mut state = State::Init;
+        let mut pending_end_element = None;
+        for evt in &self.events {
+            match state {
+                State::Init => {
+                    match evt {
+                        xml::reader::XmlEvent::StartElement {
+                            name, attributes, ..
+                        } if name.namespace.as_deref() == Some(crate::ns::RDF)
+                            && name.local_name == "Description" =>
+                        {
+                            // A description start node
+                            evts.push(xml::reader::XmlEvent::StartElement {
+                                name: name.clone(),
+                                attributes: attributes.clone(),
+                                namespace: all_namespaces.clone(),
+                            });
+
+                            state = State::InDescription;
+                        }
+                        xml::reader::XmlEvent::StartDocument { .. } => { // Just skip this
+                        }
+                        other => {
+                            evts.push(other.clone());
+                        }
+                    }
+                }
+                State::InDescription => {
+                    match evt {
+                        xml::reader::XmlEvent::EndElement { name }
+                            if name.namespace.as_deref() == Some(crate::ns::RDF)
+                                && name.local_name == "Description" =>
+                        {
+                            // Finishing a description node
+                            state = State::SkipDescription;
+                            pending_end_element = Some(evt.clone());
+                        }
+                        other => {
+                            evts.push(other.clone());
+                        }
+                    }
+                }
+                State::SkipDescription => {
+                    match evt {
+                        xml::reader::XmlEvent::StartElement { name, .. } => {
+                            if name.namespace.as_deref() == Some(crate::ns::RDF)
+                                && name.local_name == "Description"
+                            {
+                                // Start description, we're skipping this
+                                state = State::InDescription;
+                                pending_end_element.take();
+                            }
+                        }
+                        other => {
+                            if let Some(evt) = pending_end_element.take() {
+                                evts.push(evt);
+                            }
+
+                            evts.push(other.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        evts
+    }
 }
