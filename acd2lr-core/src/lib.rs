@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use serde::Serialize;
 
+pub mod file;
 pub mod ns;
 pub mod xmp;
 pub mod xpacket;
