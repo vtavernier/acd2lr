@@ -5,6 +5,7 @@ authors = ["Vincent Tavernier <vince.tavernier@gmail.com>"]
 edition = "2018"
 
 [dependencies]
+async-std = "1.9"
 chrono = { version = "0.4", features = ["serde"] }
 memchr = "2.4"
 serde = { version = "1.0", features = ["derive"] }

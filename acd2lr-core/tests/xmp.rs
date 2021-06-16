@@ -1,9 +1,11 @@
+use std::{convert::TryFrom, io::prelude::*, path::Path};
+
 use acd2lr_core::{
     file::XPacketFile,
     xmp::{rules, XmpData},
     xpacket::XPacket,
 };
-use std::{convert::TryFrom, fs::File, io::prelude::*, path::Path};
+use async_std::{fs::File, task::block_on};
 use test_env_log::test;
 
 fn test_xpacket(val: &[u8]) -> XPacket {
@@ -48,10 +50,12 @@ fn test_xmp_lightroom() {
     test_xmp(&include_bytes!("data/lightroom_data.xpacket")[..]);
 }
 
-fn test_rewrite(p: impl AsRef<Path>) {
-    let packet = XPacketFile::open(File::open(p.as_ref()).unwrap())
+async fn test_rewrite(p: impl AsRef<Path>) {
+    let packet = XPacketFile::open(File::open(p.as_ref()).await.unwrap())
+        .await
         .unwrap()
         .read_packet_bytes()
+        .await
         .unwrap()
         .unwrap();
     let packet = XPacket::try_from(&packet[..]).unwrap();
@@ -112,10 +116,14 @@ fn test_rewrite(p: impl AsRef<Path>) {
 
 #[test]
 fn test_rewrite_single() {
-    test_rewrite("tests/data/test_cat.jpg");
+    block_on(async {
+        test_rewrite("tests/data/test_cat.jpg").await;
+    });
 }
 
 #[test]
 fn test_rewrite_multi() {
-    test_rewrite("tests/data/test_cat_multi.jpg");
+    block_on(async {
+        test_rewrite("tests/data/test_cat_multi.jpg").await;
+    });
 }

@@ -16,6 +16,7 @@ paw = "1.0"
 structopt = { version = "0.3", features = ["paw"] }
 thiserror = "1.0"
 
+async-std = "1.9"
 gtk = { version = "0.9", features = ["v3_24"] }
 gio = "0.9"
 glib = "0.10"

@@ -1,8 +1,8 @@
-use std::{
+use std::ops::Range;
+
+use async_std::{
     fs::File,
-    io::BufReader,
-    io::{prelude::*, SeekFrom},
-    ops::Range,
+    io::{prelude::*, BufReader, SeekFrom},
 };
 
 use thiserror::Error;
@@ -28,14 +28,14 @@ impl XPacketFile {
         }
     }
 
-    fn find_needle(
+    async fn find_needle(
         buf: &mut BufReader<File>,
         needle: &[u8],
         buffer: &mut [u8],
     ) -> std::io::Result<Option<usize>> {
         // Look for the packet beginning
         loop {
-            if let Ok(_) = buf.read_exact(buffer) {
+            if let Ok(_) = buf.read_exact(buffer).await {
                 // read enough bytes
 
                 if let Some(idx) = memchr::memchr(needle[0], &buffer) {
@@ -47,17 +47,20 @@ impl XPacketFile {
 
                         if &buffer[idx..(idx + needle.len())] == needle {
                             // We found the needle at idx
-                            let needle_idx = buf.stream_position()? as usize - left_in_haystack;
+                            let needle_idx =
+                                buf.seek(SeekFrom::Current(0)).await? as usize - left_in_haystack;
                             // Seek back
-                            buf.seek(SeekFrom::Start(needle_idx as _))?;
+                            buf.seek(SeekFrom::Start(needle_idx as _)).await?;
                             return Ok(Some(needle_idx));
                         } else {
                             // We didn't find the needle at idx, seek back and repeat read
-                            buf.seek(SeekFrom::Current(-((left_in_haystack - 1) as i64)))?;
+                            buf.seek(SeekFrom::Current(-((left_in_haystack - 1) as i64)))
+                                .await?;
                         }
                     } else {
                         // There's not enough left for the needle
-                        buf.seek(SeekFrom::Current(-(left_in_haystack as i64)))?;
+                        buf.seek(SeekFrom::Current(-(left_in_haystack as i64)))
+                            .await?;
                     }
                 } else {
                     // Start char not found in the entire buffer, so we can skip away
@@ -73,7 +76,7 @@ impl XPacketFile {
         &self.fh
     }
 
-    pub fn open(file: File) -> std::io::Result<Self> {
+    pub async fn open(file: File) -> std::io::Result<Self> {
         // Wrap with a BufReader
         let mut buf = BufReader::new(file);
 
@@ -86,7 +89,9 @@ impl XPacketFile {
             &mut buf,
             &XPACKET_BEGIN,
             &mut haystack_buffer[..XPACKET_BEGIN.len()],
-        )? {
+        )
+        .await?
+        {
             start
         } else {
             return Ok(Self::no_xpacket(buf));
@@ -98,7 +103,9 @@ impl XPacketFile {
             &mut buf,
             &XPACKET_END,
             &mut haystack_buffer[..XPACKET_END.len()],
-        )? {
+        )
+        .await?
+        {
             // nothing to do, we use this to advance the stream
         } else {
             return Ok(Self::no_xpacket(buf));
@@ -110,7 +117,9 @@ impl XPacketFile {
             &mut buf,
             &BOUND_MARKER,
             &mut haystack_buffer[..BOUND_MARKER.len()],
-        )? {
+        )
+        .await?
+        {
             // We want the end of the needle to return [start, end)
             end + BOUND_MARKER.len()
         } else {
@@ -120,12 +129,12 @@ impl XPacketFile {
         Ok(Self::with_xpacket(buf, start..end))
     }
 
-    pub fn read_packet_bytes(&mut self) -> std::io::Result<Option<Vec<u8>>> {
+    pub async fn read_packet_bytes(&mut self) -> std::io::Result<Option<Vec<u8>>> {
         if let Some(range) = self.span.clone() {
-            self.fh.seek(SeekFrom::Start(range.start as _))?;
+            self.fh.seek(SeekFrom::Start(range.start as _)).await?;
 
             let mut buf = vec![0; range.len()];
-            self.fh.read_exact(&mut buf[..])?;
+            self.fh.read_exact(&mut buf[..]).await?;
 
             Ok(Some(buf))
         } else {
@@ -133,17 +142,17 @@ impl XPacketFile {
         }
     }
 
-    pub fn write_packet_bytes(&mut self, new_bytes: &[u8]) -> Result<(), WritePacketError> {
+    pub async fn write_packet_bytes(&mut self, new_bytes: &[u8]) -> Result<(), WritePacketError> {
         if let Some(range) = self.span.clone() {
             if range.len() != new_bytes.len() {
                 return Err(WritePacketError::WrongPacketSize);
             }
 
             // Seek to the beginning of the packet
-            self.fh.seek(SeekFrom::Start(range.start as _))?;
+            self.fh.seek(SeekFrom::Start(range.start as _)).await?;
 
             // Write the packet
-            self.fh.write_all(new_bytes)?;
+            self.fh.write_all(new_bytes).await?;
 
             Ok(())
         } else {

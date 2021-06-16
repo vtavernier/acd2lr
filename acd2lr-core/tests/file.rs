@@ -1,18 +1,19 @@
 use std::convert::TryFrom;
-use std::fs::File;
 use std::path::Path;
 
 use acd2lr_core::{file::XPacketFile, xmp::XmpData, xpacket::XPacket};
+use async_std::{fs::File, task::block_on};
 use test_env_log::test;
 
-fn test_file(path: impl AsRef<Path>) {
-    let result = XPacketFile::open(File::open(path.as_ref()).unwrap());
+async fn test_file(path: impl AsRef<Path>) {
+    let result = XPacketFile::open(File::open(path.as_ref()).await.unwrap()).await;
     eprintln!("{:?}", result);
     assert!(result.is_ok());
 
     let mut result = result.unwrap();
     let packet = result
         .read_packet_bytes()
+        .await
         .expect("failed to read packet bytes");
     assert!(packet.is_some());
 
@@ -25,10 +26,14 @@ fn test_file(path: impl AsRef<Path>) {
 
 #[test]
 fn test_single_description() {
-    test_file("tests/data/test_cat.jpg");
+    block_on(async {
+        test_file("tests/data/test_cat.jpg").await;
+    });
 }
 
 #[test]
 fn test_multi_description() {
-    test_file("tests/data/test_cat_multi.jpg");
+    block_on(async {
+        test_file("tests/data/test_cat_multi.jpg").await;
+    });
 }
