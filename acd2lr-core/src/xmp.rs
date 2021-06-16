@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use thiserror::Error;
@@ -164,19 +165,95 @@ impl XmpData {
             }
         }
 
-        // Add all rule namespaces
-        for rule in &rules {
-            if let Some(namespace) = rule.namespace() {
-                if !all_namespaces.contains(rule.prefix()) {
-                    all_namespaces.put(rule.prefix(), namespace);
+        // Collect all rdf:Description attributes
+        let mut all_attributes = Vec::new();
+        let mut level = 0;
+        for evt in &self.events {
+            match evt {
+                xml::reader::XmlEvent::StartElement {
+                    name,
+                    attributes,
+                    namespace: _,
+                } => {
+                    if name.namespace.as_deref() == Some(crate::ns::RDF)
+                        && name.local_name == "Description"
+                    {
+                        if level == 0 {
+                            all_attributes.extend(attributes.into_iter().map(Cow::Borrowed));
+                        }
+
+                        level += 1;
+                    }
                 }
+                xml::reader::XmlEvent::EndElement { name } => {
+                    if name.namespace.as_deref() == Some(crate::ns::RDF)
+                        && name.local_name == "Description"
+                    {
+                        level -= 1;
+                    }
+                }
+                _ => {}
             }
         }
+
+        let register_rule_namespace = |evts: &mut [xml::reader::XmlEvent], rule: &RewriteRule| {
+            if let Some(ns) = rule.namespace() {
+                for evt in evts {
+                    match evt {
+                        xml::reader::XmlEvent::StartElement {
+                            name, namespace, ..
+                        } if name.namespace.as_deref() == Some(crate::ns::RDF)
+                            && name.local_name == "Description" =>
+                        {
+                            if !namespace.contains(rule.prefix()) {
+                                namespace.put(rule.prefix(), ns);
+                            }
+
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        };
 
         // Add all rules to a hash map to speed up lookups
         let mut rules: HashMap<_, _> = rules
             .into_iter()
-            .map(|rule| ((rule.namespace(), rule.local_name()), rule))
+            .filter_map(|rule| {
+                // Check if we can process an attribute
+                if rule.allow_attribute() {
+                    if let Some(attr) = all_attributes
+                        .iter_mut()
+                        .find(|attr| rule.matches(&attr.name.borrow()))
+                    {
+                        tracing::debug!(rule = %rule.name(), "processing rule as attribute");
+
+                        let new_value = rule
+                            .run_attribute(&attr.value)
+                            .map_err(|_| WriteError::RuleFailed(attr.name.clone()));
+
+                        let new_value = match new_value {
+                            Ok(new_value) => new_value,
+                            Err(error) => return Some(Err(error)),
+                        };
+
+                        register_rule_namespace(&mut evts[..], &rule);
+
+                        *attr = Cow::Owned(xml::attribute::OwnedAttribute {
+                            name: attr.name.clone(),
+                            value: new_value,
+                        });
+
+                        // Do not add it to leftover rules
+                        return None;
+                    }
+                }
+
+                Some(Ok(((rule.namespace(), rule.local_name()), rule)))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
             .collect();
 
         enum State {
@@ -193,15 +270,17 @@ impl XmpData {
             match state {
                 State::Init => {
                     match evt {
-                        xml::reader::XmlEvent::StartElement {
-                            name, attributes, ..
-                        } if name.namespace.as_deref() == Some(crate::ns::RDF)
-                            && name.local_name == "Description" =>
+                        xml::reader::XmlEvent::StartElement { name, .. }
+                            if name.namespace.as_deref() == Some(crate::ns::RDF)
+                                && name.local_name == "Description" =>
                         {
                             // A description start node
                             evts.push(xml::reader::XmlEvent::StartElement {
                                 name: name.clone(),
-                                attributes: attributes.clone(),
+                                attributes: all_attributes
+                                    .drain(..)
+                                    .map(|a| (*a).to_owned())
+                                    .collect(),
                                 namespace: all_namespaces.clone(),
                             });
 
@@ -266,6 +345,8 @@ impl XmpData {
                                         }
                                     }
 
+                                    register_rule_namespace(&mut evts[..], &rule);
+
                                     evts.extend(
                                         rule.run(&rule_events[..])
                                             .map_err(|_| WriteError::RuleFailed(rule.name()))?
@@ -296,13 +377,17 @@ impl XmpData {
                         other => {
                             if let Some(evt) = pending_end_element.take() {
                                 // Before we close the rdf:Description, we need to make sure we ran
-                                // all rules
+                                // all required rules
                                 for (_, rule) in rules.drain() {
-                                    evts.extend(
-                                        rule.run(&[])
-                                            .map_err(|_| WriteError::RuleFailed(rule.name()))?
-                                            .into_iter(),
-                                    );
+                                    if rule.required() {
+                                        register_rule_namespace(&mut evts[..], &rule);
+
+                                        evts.extend(
+                                            rule.run(&[])
+                                                .map_err(|_| WriteError::RuleFailed(rule.name()))?
+                                                .into_iter(),
+                                        );
+                                    }
                                 }
 
                                 evts.push(evt);

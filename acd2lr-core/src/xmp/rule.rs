@@ -5,23 +5,32 @@ pub struct RewriteRule {
     node_namespace: Option<&'static str>,
     node_name: &'static str,
     node_prefix: &'static str,
+    allow_attribute: bool,
+    required: bool,
     action: Box<dyn RewriteAction>,
 }
 
 #[derive(Debug, Error)]
-pub enum RewriteRuleError {}
+pub enum RewriteRuleError {
+    #[error("attributes are not supported by this rule")]
+    Unsupported,
+}
 
 impl RewriteRule {
     pub fn new(
         node_namespace: Option<&'static str>,
         node_name: &'static str,
         node_prefix: &'static str,
+        allow_attribute: bool,
+        required: bool,
         action: impl RewriteAction + 'static,
     ) -> Self {
         Self {
             node_namespace,
             node_name,
             node_prefix,
+            allow_attribute,
+            required,
             action: Box::new(action),
         }
     }
@@ -46,6 +55,14 @@ impl RewriteRule {
         self.node_prefix
     }
 
+    pub fn allow_attribute(&self) -> bool {
+        self.allow_attribute
+    }
+
+    pub fn required(&self) -> bool {
+        self.required
+    }
+
     pub fn matches(&self, name: &xml::name::Name) -> bool {
         name.local_name == self.node_name && name.namespace.as_deref() == self.node_namespace
     }
@@ -60,6 +77,11 @@ impl RewriteRule {
             .rewrite(self, input, &mut output)
             .map(|_| output)
     }
+
+    pub fn run_attribute(&self, input: &str) -> Result<String, RewriteRuleError> {
+        // Rewrite contents
+        self.action.rewrite_attribute(self, input)
+    }
 }
 
 pub trait RewriteAction {
@@ -69,9 +91,25 @@ pub trait RewriteAction {
         input: &[&xml::reader::XmlEvent],
         output: &mut Vec<xml::reader::XmlEvent>,
     ) -> Result<(), RewriteRuleError>;
+
+    fn rewrite_attribute(
+        &self,
+        _rule: &RewriteRule,
+        _input: &str,
+    ) -> Result<String, RewriteRuleError> {
+        Err(RewriteRuleError::Unsupported)
+    }
 }
 
 pub struct SetToCurrentDateTime;
+
+impl SetToCurrentDateTime {
+    fn now() -> String {
+        chrono::Local::now()
+            .format("%Y-%m-%dT%H:%M:%S%:z")
+            .to_string()
+    }
+}
 
 impl RewriteAction for SetToCurrentDateTime {
     fn rewrite(
@@ -92,15 +130,19 @@ impl RewriteAction for SetToCurrentDateTime {
             namespace: xml::namespace::Namespace::empty(),
         });
 
-        output.push(xml::reader::XmlEvent::Characters(
-            chrono::Local::now()
-                .format("%Y-%m-%dT%H:%M:%S%:z")
-                .to_string(),
-        ));
+        output.push(xml::reader::XmlEvent::Characters(Self::now()));
 
         output.push(xml::reader::XmlEvent::EndElement { name });
 
         Ok(())
+    }
+
+    fn rewrite_attribute(
+        &self,
+        _rule: &RewriteRule,
+        _input: &str,
+    ) -> Result<String, RewriteRuleError> {
+        Ok(Self::now())
     }
 }
 
@@ -184,6 +226,8 @@ pub mod rules {
             Some(crate::ns::XMP),
             "MetadataDate",
             "xmp",
+            true,
+            false,
             SetToCurrentDateTime,
         )
     }
@@ -198,6 +242,8 @@ pub mod rules {
             Some(namespace),
             name,
             prefix,
+            false,
+            true,
             SetRdfList::new("Seq", values),
         )
     }
@@ -212,6 +258,8 @@ pub mod rules {
             Some(namespace),
             name,
             prefix,
+            false,
+            true,
             SetRdfList::new("Alt", values),
         )
     }
@@ -226,6 +274,8 @@ pub mod rules {
             Some(namespace),
             name,
             prefix,
+            false,
+            true,
             SetRdfList::new("Bag", values),
         )
     }
