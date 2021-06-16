@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use serde::Serialize;
 
 pub mod acdsee;
+pub mod container;
 pub mod file;
 pub mod ns;
 pub mod xmp;

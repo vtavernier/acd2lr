@@ -3,24 +3,142 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+
+use acd2lr_core::{
+    acdsee::AcdSeeError,
+    container::{Container, ContainerError, ContainerRewriteError},
+    xmp::{rules, WriteError},
+};
+use async_std::fs::File;
 use thiserror::Error;
 
 pub const SUPPORTED_EXTS: &[&str] = &["jpeg", "jpg", "tif", "tiff", "xmp", "xpacket"];
 
 #[derive(Debug)]
-pub struct File {
-    path: PathBuf,
+enum FileState {
+    Init,
+    IoError(std::io::Error),
+    NoXmpData,
+    NoAcdData,
+    ContainerError(ContainerError),
+    XmpRewriteError(WriteError),
+    InvalidAcdseeData(AcdSeeError),
+    Ready(Vec<u8>),
+    RewriteError(ContainerRewriteError),
 }
 
-impl TryFrom<PathBuf> for File {
-    type Error = FileError;
-
-    fn try_from(value: PathBuf) -> Result<Self, Self::Error> {
-        Ok(Self { path: value })
+impl From<Result<FileState, ContainerError>> for FileState {
+    fn from(result: Result<FileState, ContainerError>) -> Self {
+        match result {
+            Ok(result) => result,
+            Err(error) => Self::ContainerError(error),
+        }
     }
 }
 
-fn files_from_dir(dir: &Path) -> Vec<Result<Arc<File>, FileError>> {
+impl From<std::io::Error> for FileState {
+    fn from(io: std::io::Error) -> Self {
+        Self::IoError(io)
+    }
+}
+
+impl Default for FileState {
+    fn default() -> Self {
+        Self::Init
+    }
+}
+
+#[derive(Debug)]
+pub struct MetadataFile {
+    path: Arc<PathBuf>,
+    last_check: Option<std::time::SystemTime>,
+    state: FileState,
+}
+
+impl MetadataFile {
+    async fn get_rewrite_state(&self, file: File) -> Result<FileState, ContainerError> {
+        // Open the container
+        let mut container = Container::open(file).await?;
+
+        // Read the xmp data
+        let data = container.read_xmp().await?;
+
+        if let Some(xmp) = data {
+            // Try to read the acdsee data
+            match xmp.acdsee_data() {
+                Ok(acd) => {
+                    // We have some data, check if it requires rewrites?
+                    let mut rules = acd.to_ruleset();
+                    if rules.is_empty() {
+                        return Ok(FileState::NoAcdData);
+                    } else {
+                        // There are some rules, so try to apply them
+                        rules.push(rules::xmp_metadata_date());
+
+                        match xmp.write_events(rules) {
+                            Ok(rewritten) => {
+                                // We have an XML event stream ready, try to prepare the rewritten content
+                                match container.prepare_write(&rewritten).await {
+                                    Ok(packet) => {
+                                        // Everything works, including the rewrite back to the file
+                                        Ok(FileState::Ready(packet))
+                                    }
+                                    Err(error) => {
+                                        // Failed the last part
+                                        Ok(FileState::RewriteError(error))
+                                    }
+                                }
+                            }
+                            Err(error) => Ok(FileState::XmpRewriteError(error)),
+                        }
+                    }
+                }
+                Err(error) => Ok(FileState::InvalidAcdseeData(error)),
+            }
+        } else {
+            Ok(FileState::NoXmpData)
+        }
+    }
+
+    async fn check_rewrite_inner(&self) -> (FileState, Option<std::time::SystemTime>) {
+        // Open the file
+        match File::open(&*self.path).await {
+            Ok(file) => match file.metadata().await {
+                Ok(metadata) => match metadata.modified() {
+                    Ok(modified) => (self.get_rewrite_state(file).await.into(), Some(modified)),
+                    Err(error) => (error.into(), None),
+                },
+                Err(error) => (error.into(), None),
+            },
+            Err(error) => (error.into(), None),
+        }
+    }
+
+    async fn check_rewrite(&self) -> Self {
+        let path = self.path.clone();
+        let (result, modified) = self.check_rewrite_inner().await;
+
+        Self {
+            path,
+            last_check: modified,
+            state: result,
+        }
+    }
+}
+
+impl TryFrom<PathBuf> for MetadataFile {
+    type Error = FileError;
+
+    fn try_from(value: PathBuf) -> Result<Self, Self::Error> {
+        Ok(Self {
+            path: Arc::new(value),
+            last_check: None,
+            state: Default::default(),
+        })
+    }
+}
+
+fn files_from_dir(dir: &Path) -> Vec<Result<Arc<MetadataFile>, FileError>> {
     let mut result = Vec::new();
 
     match std::fs::read_dir(&dir) {
@@ -36,7 +154,7 @@ fn files_from_dir(dir: &Path) -> Vec<Result<Arc<File>, FileError>> {
                                 .map(|ext| ext.to_ascii_lowercase())
                             {
                                 if SUPPORTED_EXTS.binary_search(&ext.as_str()).is_ok() {
-                                    result.push(File::try_from(path).map(Arc::new));
+                                    result.push(MetadataFile::try_from(path).map(Arc::new));
                                 }
                             }
                         } else {
@@ -73,11 +191,11 @@ enum Event {
 
 #[derive(Default, Debug, Clone)]
 pub struct State {
-    files: Vec<Arc<File>>,
+    files: Vec<Arc<MetadataFile>>,
     file_events: Vec<Event>,
 }
 
-pub type AddFilesResult = Vec<Result<Arc<File>, FileError>>;
+pub type AddFilesResult = Vec<Result<Arc<MetadataFile>, FileError>>;
 
 impl State {
     pub fn new() -> Self {
@@ -91,7 +209,7 @@ impl State {
                 if path.is_dir() {
                     files_from_dir(&path)
                 } else {
-                    vec![File::try_from(path).map(Arc::new)]
+                    vec![MetadataFile::try_from(path).map(Arc::new)]
                 }
             })
             .collect();

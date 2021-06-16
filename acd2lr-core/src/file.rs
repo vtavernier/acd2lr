@@ -72,11 +72,18 @@ impl XPacketFile {
         }
     }
 
+    pub fn into_inner(self) -> (File, Option<Range<usize>>) {
+        (self.fh, self.span)
+    }
+
     pub fn file(&self) -> &File {
         &self.fh
     }
 
-    pub async fn open(file: File) -> std::io::Result<Self> {
+    pub async fn open(mut file: File) -> std::io::Result<Self> {
+        // Start at the beginning
+        file.seek(SeekFrom::Start(0)).await?;
+
         // Wrap with a BufReader
         let mut buf = BufReader::new(file);
 
