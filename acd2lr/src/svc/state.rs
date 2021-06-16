@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     convert::TryFrom,
     path::{Path, PathBuf},
     sync::Arc,
@@ -10,11 +11,13 @@ use acd2lr_core::{
     xmp::{rules, WriteError},
 };
 use async_std::fs::File;
+use strum_macros::{AsRefStr, EnumDiscriminants};
 use thiserror::Error;
 
 pub const SUPPORTED_EXTS: &[&str] = &["jpeg", "jpg", "tif", "tiff", "xmp", "xpacket"];
 
-#[derive(Debug)]
+#[derive(Debug, EnumDiscriminants)]
+#[strum_discriminants(name(FileStateKind), derive(AsRefStr))]
 enum FileState {
     Init,
     IoError(std::io::Error),
@@ -189,10 +192,53 @@ enum Event {
     Changed(std::ops::Range<usize>),
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Debug)]
+enum BackgroundTask {
+    TryRewrite {
+        index: usize,
+        file: Arc<MetadataFile>,
+    },
+}
+
+impl BackgroundTask {
+    #[tracing::instrument(skip(state))]
+    async fn try_rewrite(index: usize, file: Arc<MetadataFile>, state: &mut State) {
+        // Find the file slot
+        if let Some(state_file) = state.files.get_mut(index) {
+            // Check that the path matches
+            if state_file.path.as_ref() != file.path.as_ref() {
+                tracing::warn!(index = %index, expected = %file.path.display(), actual = %file.path.display(), "index mismatch");
+                return;
+            }
+
+            // We are working on the right file
+            // Try reading the metadata
+            let new_file = file.check_rewrite().await;
+            tracing::info!(new_state = ?FileStateKind::from(&new_file.state).as_ref(), "checked rewrite");
+
+            // Update the slot
+            *state_file = Arc::new(new_file);
+            // Notify slot update
+            state.file_events.push(Event::Changed(index..(index + 1)));
+        } else {
+            tracing::warn!(index = %index, file = %file.path.display(), "no file at index");
+        }
+    }
+
+    async fn run(self, state: &mut State) {
+        match self {
+            BackgroundTask::TryRewrite { index, file } => {
+                Self::try_rewrite(index, file, state).await;
+            }
+        }
+    }
+}
+
+#[derive(Default, Debug)]
 pub struct State {
     files: Vec<Arc<MetadataFile>>,
     file_events: Vec<Event>,
+    pending_tasks: VecDeque<BackgroundTask>,
 }
 
 pub type AddFilesResult = Vec<Result<Arc<MetadataFile>, FileError>>;
@@ -216,8 +262,17 @@ impl State {
 
         // Range start for added events
         let start = self.files.len();
-        for ok in results.iter().filter(|res| res.is_ok()) {
-            self.files.push(ok.as_ref().unwrap().clone());
+        for ok in results.iter() {
+            if let Ok(file) = ok {
+                // Add the file to the list
+                self.files.push(file.clone());
+
+                // Add a task to read the file again
+                self.pending_tasks.push_back(BackgroundTask::TryRewrite {
+                    index: self.files.len() - 1,
+                    file: file.clone(),
+                });
+            }
         }
 
         let end = self.files.len();
@@ -227,5 +282,15 @@ impl State {
 
         // Return the result
         results
+    }
+
+    pub async fn poll_bg(&mut self) {
+        if let Some(task) = self.pending_tasks.pop_front() {
+            // Something to do
+            task.run(self).await
+        } else {
+            // Nothing to do
+            futures::future::pending().await
+        }
     }
 }

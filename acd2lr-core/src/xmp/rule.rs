@@ -84,7 +84,7 @@ impl RewriteRule {
     }
 }
 
-pub trait RewriteAction {
+pub trait RewriteAction: Send {
     fn rewrite(
         &self,
         rule: &RewriteRule,

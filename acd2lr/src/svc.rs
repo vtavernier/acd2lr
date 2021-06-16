@@ -4,6 +4,7 @@ use async_std::{
     channel,
     task::{block_on, JoinHandle},
 };
+use futures::{select, FutureExt};
 
 mod state;
 pub use state::*;
@@ -41,12 +42,26 @@ impl Service {
         // Initialize service state
         let mut state = State::new();
 
-        while let Ok(message) = rx.recv().await {
-            match message {
-                Request::OpenPaths(paths) => {
-                    self.ui
-                        .send(Message::AddPathsComplete(state.add_files(paths)))
-                        .unwrap();
+        loop {
+            // Listen for child tasks and channels
+            select! {
+                result = rx.recv().fuse() => {
+                    match result {
+                        Ok(request) => match request {
+                            Request::OpenPaths(paths) => {
+                                self.ui
+                                    .send(Message::AddPathsComplete(state.add_files(paths)))
+                                    .unwrap();
+                            }
+                        },
+                        Err(_) => {
+                            // All senders were dropped
+                            break;
+                        }
+                    }
+                },
+                _ = state.poll_bg().fuse() => {
+                    // No further processing required
                 }
             }
         }
