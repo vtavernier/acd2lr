@@ -181,7 +181,7 @@ impl XmpData {
 
         enum State {
             Init,
-            InDescription,
+            InDescription(usize),
             SkipDescription,
         }
 
@@ -205,7 +205,7 @@ impl XmpData {
                                 namespace: all_namespaces.clone(),
                             });
 
-                            state = State::InDescription;
+                            state = State::InDescription(1);
                         }
                         xml::reader::XmlEvent::StartDocument { .. } => {
                             // Just skip this
@@ -215,17 +215,31 @@ impl XmpData {
                         }
                     }
                 }
-                State::InDescription => {
+                State::InDescription(level) => {
                     match evt {
                         xml::reader::XmlEvent::EndElement { name }
                             if name.namespace.as_deref() == Some(crate::ns::RDF)
                                 && name.local_name == "Description" =>
                         {
-                            // Finishing a description node
-                            state = State::SkipDescription;
-                            pending_end_element = Some((*evt).clone());
+                            if level == 1 {
+                                // Finishing a description node
+                                state = State::SkipDescription;
+                                pending_end_element = Some((*evt).clone());
+                            } else {
+                                // An inner description node
+                                state = State::InDescription(level - 1);
+                                evts.push(evt.clone());
+                            }
                         }
-                        xml::reader::XmlEvent::StartElement { name, .. } => {
+                        xml::reader::XmlEvent::StartElement { name, .. }
+                            if name.namespace.as_deref() == Some(crate::ns::RDF)
+                                && name.local_name == "Description" =>
+                        {
+                            // An inner description node
+                            state = State::InDescription(level + 1);
+                            evts.push(evt.clone());
+                        }
+                        xml::reader::XmlEvent::StartElement { name, .. } if level == 1 => {
                             let id = (name.namespace.as_deref(), name.local_name.as_str());
                             if let Some(rule) = rules.get(&id) {
                                 if rule.matches(&name.borrow()) {
@@ -276,7 +290,7 @@ impl XmpData {
                                 && name.local_name == "Description" =>
                         {
                             // Start description, we're skipping this
-                            state = State::InDescription;
+                            state = State::InDescription(1);
                             pending_end_element.take();
                         }
                         other => {
