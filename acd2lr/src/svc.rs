@@ -1,4 +1,9 @@
-use std::{mem::ManuallyDrop, path::PathBuf, thread::JoinHandle};
+use std::{mem::ManuallyDrop, path::PathBuf};
+
+use async_std::{
+    channel,
+    task::{block_on, JoinHandle},
+};
 
 mod state;
 pub use state::*;
@@ -9,8 +14,8 @@ pub enum Request {
     OpenPaths(Vec<PathBuf>),
 }
 
-pub type RequestSender = std::sync::mpsc::Sender<Request>;
-pub type RequestReceiver = std::sync::mpsc::Receiver<Request>;
+pub type RequestSender = channel::Sender<Request>;
+pub type RequestReceiver = channel::Receiver<Request>;
 
 /// A message from the backend to the UI
 #[derive(Debug)]
@@ -30,13 +35,13 @@ impl Service {
         Self { ui }
     }
 
-    fn run(self, rx: RequestReceiver) {
+    async fn run(self, rx: RequestReceiver) {
         info!("started backend service");
 
         // Initialize service state
         let mut state = State::new();
 
-        while let Ok(message) = rx.recv() {
+        while let Ok(message) = rx.recv().await {
             match message {
                 Request::OpenPaths(paths) => {
                     self.ui
@@ -49,9 +54,9 @@ impl Service {
 
     pub fn spawn(self) -> ServiceHandle {
         // Create the request channel
-        let (tx, rx) = std::sync::mpsc::channel::<Request>();
+        let (tx, rx) = channel::unbounded();
         // Create the thread handle
-        let join_handle = std::thread::spawn(move || self.run(rx));
+        let join_handle = async_std::task::spawn(self.run(rx));
 
         ServiceHandle {
             tx: ManuallyDrop::new(tx),
@@ -67,7 +72,7 @@ pub struct ServiceHandle {
 
 impl ServiceHandle {
     pub fn send_request(&self, request: Request) {
-        self.tx.send(request).expect("failed sending request")
+        block_on(self.tx.send(request)).expect("failed sending request")
     }
 }
 
@@ -81,7 +86,7 @@ impl Drop for ServiceHandle {
             drop(tx);
 
             // Join the thread
-            join_handle.join().unwrap();
+            async_std::task::block_on(join_handle);
         }
     }
 }
