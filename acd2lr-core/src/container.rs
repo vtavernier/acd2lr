@@ -4,7 +4,10 @@ use async_std::{fs::File, io::prelude::*};
 use thiserror::Error;
 use xml::reader::XmlEvent;
 
-use crate::xpacket::{XPacket, XPacketMut};
+use crate::{
+    file::WritePacketError,
+    xpacket::{XPacket, XPacketMut},
+};
 
 trait WriterExt {
     fn write_all(&mut self, events: &[XmlEvent]) -> Result<(), xml::writer::Error>;
@@ -55,6 +58,26 @@ impl From<xml::writer::Error> for ContainerRewriteError {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum ContainerWriteError {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error("missing xpacket")]
+    MissingXPacket,
+    #[error("not enough space for the new xpacket")]
+    NotEnoughSpace,
+}
+
+impl From<WritePacketError> for ContainerWriteError {
+    fn from(error: WritePacketError) -> Self {
+        match error {
+            WritePacketError::Io(io) => Self::Io(io),
+            WritePacketError::NoPacket => Self::MissingXPacket,
+            WritePacketError::WrongPacketSize => Self::NotEnoughSpace,
+        }
+    }
+}
+
 pub struct Container {
     data: ContainerData,
 }
@@ -100,6 +123,16 @@ impl XmpData {
         }
 
         Ok(out)
+    }
+
+    pub async fn write(&mut self, packet: &[u8]) -> Result<(), ContainerWriteError> {
+        // Truncate the file
+        self.fh.set_len(0).await?;
+
+        // Write the new contents
+        self.fh.write_all(packet).await?;
+
+        Ok(())
     }
 }
 
@@ -180,6 +213,11 @@ impl XPacketData {
 
         Err(ContainerRewriteError::NotEnoughSpace)
     }
+
+    pub async fn write(&mut self, packet: &[u8]) -> Result<(), ContainerWriteError> {
+        self.inner.write_packet_bytes(packet).await?;
+        Ok(())
+    }
 }
 
 impl Container {
@@ -217,6 +255,13 @@ impl Container {
         match &mut self.data {
             ContainerData::Xmp(inner) => inner.prepare_write(events).await,
             ContainerData::XPacket(inner) => inner.prepare_write(events).await,
+        }
+    }
+
+    pub async fn write(&mut self, packet: &[u8]) -> Result<(), ContainerWriteError> {
+        match &mut self.data {
+            ContainerData::Xmp(inner) => inner.write(packet).await,
+            ContainerData::XPacket(inner) => inner.write(packet).await,
         }
     }
 
