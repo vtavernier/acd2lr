@@ -129,11 +129,11 @@ impl XmpData {
         // Seek to the beginning
         self.fh.seek(SeekFrom::Start(0)).await?;
 
-        // Truncate the file
-        self.fh.set_len(0).await?;
-
         // Write the new contents
         self.fh.write_all(packet).await?;
+
+        // Truncate the file
+        self.fh.set_len(packet.len() as _).await?;
 
         Ok(())
     }
