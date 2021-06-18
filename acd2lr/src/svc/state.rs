@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     collections::VecDeque,
     convert::TryFrom,
     path::{Path, PathBuf},
@@ -201,6 +202,13 @@ fn files_from_dir(dir: &Path) -> Vec<Result<Arc<MetadataFile>, FileError>> {
             result.push(Err(FileError::OpenDir(error)));
         }
     }
+
+    result.sort_by(|a, b| match (a, b) {
+        (Ok(a), Ok(b)) => a.path.cmp(&b.path),
+        (Ok(_), Err(_)) => Ordering::Less,
+        (Err(_), Ok(_)) => Ordering::Greater,
+        _ => Ordering::Equal,
+    });
 
     result
 }
