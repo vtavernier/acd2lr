@@ -24,6 +24,7 @@ pub enum Message {
     Status(String),
     AddPathsComplete(AddFilesResult),
     FileStateUpdate(Vec<Event>),
+    ProgressUpdate { current: usize, total: usize },
 }
 
 pub type MessageSender = glib::Sender<Message>;
@@ -42,6 +43,7 @@ impl Service {
 
         // Initialize service state
         let mut state = State::new();
+        let mut current_progress_total: Option<usize> = None;
 
         loop {
             // Listen for child tasks and channels
@@ -50,8 +52,11 @@ impl Service {
                     match result {
                         Ok(request) => match request {
                             Request::OpenPaths(paths) => {
+                                let (result, bg_tasks) = state.add_files(paths);
+
+                                current_progress_total = Some(bg_tasks);
                                 self.ui
-                                    .send(Message::AddPathsComplete(state.add_files(paths)))
+                                    .send(Message::AddPathsComplete(result))
                                     .unwrap();
                             }
                         },
@@ -61,8 +66,37 @@ impl Service {
                         }
                     }
                 },
-                _ = state.poll_bg().fuse() => {
+                progress = state.poll_bg().fuse() => {
                     // No further processing required
+                    match progress {
+                        BackgroundProgress::Left(left) => {
+                            let total = current_progress_total.unwrap_or_else(|| {
+                                tracing::warn!("no total progress");
+                                left + 1
+                            });
+
+                            self.ui.send(Message::ProgressUpdate {
+                                current: total - left,
+                                total,
+                            }).unwrap();
+                        },
+                        BackgroundProgress::Complete => {
+                            match current_progress_total.take() {
+                                Some(total) => {
+                                    self.ui.send(Message::ProgressUpdate {
+                                        current: total,
+                                        total,
+                                    }).unwrap();
+                                },
+                                None => {
+                                    self.ui.send(Message::ProgressUpdate {
+                                        current: 1,
+                                        total: 1
+                                    }).unwrap();
+                                }
+                            }
+                        }
+                    }
                 }
             }
 

@@ -12,8 +12,10 @@ use structopt::StructOpt;
 use gdk_pixbuf::prelude::*;
 use gio::prelude::*;
 use glib::clone;
-use gtk::{prelude::*, ListBox};
-use gtk::{Application, ApplicationWindow, Builder, FileChooserNative, MenuItem, Statusbar};
+use gtk::{prelude::*, ListBox, ProgressBar};
+use gtk::{
+    Application, ApplicationWindow, Builder, Button, FileChooserNative, MenuItem, Statusbar,
+};
 
 mod svc;
 use svc::*;
@@ -66,7 +68,14 @@ impl Ui {
         }
     }
 
-    fn handle_message(&self, item: Message, statusbar: &Statusbar, file_list: &gio::ListStore) {
+    fn handle_message(
+        &self,
+        item: Message,
+        statusbar: &Statusbar,
+        file_list: &gio::ListStore,
+        progress: &ProgressBar,
+        button_apply: &Button,
+    ) {
         match item {
             Message::Status(message) => {
                 let context = statusbar.get_context_id("description");
@@ -135,6 +144,15 @@ impl Ui {
                             );
                         }
                     }
+                }
+            }
+            Message::ProgressUpdate { current, total } => {
+                if current == total {
+                    progress.set_fraction(0.);
+                    button_apply.set_sensitive(true);
+                } else {
+                    progress.set_fraction(current as f64 / total as f64);
+                    button_apply.set_sensitive(false);
                 }
             }
         }
@@ -209,9 +227,11 @@ impl Ui {
         rx.attach(None, {
             let ui = self.clone();
             let statusbar: Statusbar = builder.get_object("statusbar").unwrap();
+            let progress: ProgressBar = builder.get_object("progressbar").unwrap();
+            let button_apply: Button = builder.get_object("button_apply").unwrap();
 
             move |item| {
-                ui.handle_message(item, &statusbar, &list);
+                ui.handle_message(item, &statusbar, &list, &progress, &button_apply);
                 glib::Continue(true)
             }
         });

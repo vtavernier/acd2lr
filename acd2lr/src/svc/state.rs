@@ -287,12 +287,28 @@ pub struct State {
 
 pub type AddFilesResult = Vec<Result<Arc<MetadataFile>, FileError>>;
 
+#[derive(Debug, Clone, Copy)]
+pub enum BackgroundProgress {
+    Left(usize),
+    Complete,
+}
+
+impl From<usize> for BackgroundProgress {
+    fn from(events_len: usize) -> Self {
+        if events_len == 0 {
+            Self::Complete
+        } else {
+            Self::Left(events_len)
+        }
+    }
+}
+
 impl State {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn add_files(&mut self, paths: Vec<PathBuf>) -> AddFilesResult {
+    pub fn add_files(&mut self, paths: Vec<PathBuf>) -> (AddFilesResult, usize) {
         let results: Vec<_> = paths
             .into_iter()
             .flat_map(|path| {
@@ -329,16 +345,20 @@ impl State {
         }
 
         // Return the result
-        results
+        (results, self.pending_tasks.len())
     }
 
-    pub async fn poll_bg(&mut self) {
+    pub async fn poll_bg(&mut self) -> BackgroundProgress {
         if let Some(task) = self.pending_tasks.pop_front() {
             // Something to do
-            task.run(self).await
+            task.run(self).await;
+
+            BackgroundProgress::from(self.pending_tasks.len())
         } else {
             // Nothing to do
-            futures::future::pending().await
+            futures::future::pending::<()>().await;
+
+            BackgroundProgress::Complete
         }
     }
 
