@@ -73,7 +73,6 @@ impl XmpData {
                 .skip(1)
                 .next()
                 .and_then(|evt| match evt {
-                    xml::reader::XmlEvent::EndElement { .. } => Some(String::new()),
                     xml::reader::XmlEvent::Characters(value) => Some(value.to_owned()),
                     _ => None,
                 })
