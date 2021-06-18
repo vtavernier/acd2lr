@@ -23,6 +23,7 @@ pub type RequestReceiver = channel::Receiver<Request>;
 pub enum Message {
     Status(String),
     AddPathsComplete(AddFilesResult),
+    FileStateUpdate(Vec<Event>),
 }
 
 pub type MessageSender = glib::Sender<Message>;
@@ -63,6 +64,11 @@ impl Service {
                 _ = state.poll_bg().fuse() => {
                     // No further processing required
                 }
+            }
+
+            let events = state.drain_events();
+            if !events.is_empty() {
+                self.ui.send(Message::FileStateUpdate(events)).unwrap();
             }
         }
     }

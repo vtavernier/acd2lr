@@ -18,7 +18,7 @@ pub const SUPPORTED_EXTS: &[&str] = &["jpeg", "jpg", "tif", "tiff", "xmp", "xpac
 
 #[derive(Debug, EnumDiscriminants)]
 #[strum_discriminants(name(FileStateKind), derive(AsRefStr))]
-enum FileState {
+pub enum FileState {
     Init,
     IoError(std::io::Error),
     NoXmpData,
@@ -28,6 +28,25 @@ enum FileState {
     InvalidAcdseeData(AcdSeeError),
     Ready(Vec<u8>),
     RewriteError(ContainerRewriteError),
+}
+
+impl std::fmt::Display for FileState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // TODO: Translate from english
+        match self {
+            FileState::Init => write!(f, "En attente"),
+            FileState::IoError(error) => write!(f, "Erreur E/S: {}", error),
+            FileState::NoXmpData => write!(f, "Aucune donnée XMP présente"),
+            FileState::NoAcdData => write!(f, "Aucune donnée ACDSee présente"),
+            FileState::ContainerError(error) => write!(f, "Erreur de lecture: {}", error),
+            FileState::XmpRewriteError(error) => write!(f, "Erreur d'écriture: {}", error),
+            FileState::InvalidAcdseeData(error) => write!(f, "Données ACDSee invalides: {}", error),
+            FileState::Ready(_) => write!(f, "Prêt pour la réecriture"),
+            FileState::RewriteError(error) => {
+                write!(f, "Erreur de préparation à la réecriture: {}", error)
+            }
+        }
+    }
 }
 
 impl From<Result<FileState, ContainerError>> for FileState {
@@ -59,6 +78,14 @@ pub struct MetadataFile {
 }
 
 impl MetadataFile {
+    pub fn path(&self) -> &Path {
+        self.path.as_path()
+    }
+
+    pub fn state(&self) -> &FileState {
+        &self.state
+    }
+
     async fn get_rewrite_state(&self, file: File) -> Result<FileState, ContainerError> {
         // Open the container
         let mut container = Container::open(file).await?;
@@ -187,9 +214,15 @@ pub enum FileError {
 }
 
 #[derive(Debug, Clone)]
-enum Event {
-    Added(std::ops::Range<usize>),
-    Changed(std::ops::Range<usize>),
+pub enum Event {
+    Added {
+        start: usize,
+        files: Vec<Arc<MetadataFile>>,
+    },
+    Changed {
+        start: usize,
+        files: Vec<Arc<MetadataFile>>,
+    },
 }
 
 #[derive(Debug)]
@@ -219,7 +252,10 @@ impl BackgroundTask {
             // Update the slot
             *state_file = Arc::new(new_file);
             // Notify slot update
-            state.file_events.push(Event::Changed(index..(index + 1)));
+            state.file_events.push(Event::Changed {
+                start: index,
+                files: vec![state_file.clone()],
+            });
         } else {
             tracing::warn!(index = %index, file = %file.path.display(), "no file at index");
         }
@@ -262,10 +298,12 @@ impl State {
 
         // Range start for added events
         let start = self.files.len();
+        let mut added = Vec::with_capacity(results.len());
         for ok in results.iter() {
             if let Ok(file) = ok {
                 // Add the file to the list
                 self.files.push(file.clone());
+                added.push(file.clone());
 
                 // Add a task to read the file again
                 self.pending_tasks.push_back(BackgroundTask::TryRewrite {
@@ -275,9 +313,11 @@ impl State {
             }
         }
 
-        let end = self.files.len();
-        if end != start {
-            self.file_events.push(Event::Added(start..end));
+        if !added.is_empty() {
+            self.file_events.push(Event::Added {
+                start,
+                files: added,
+            });
         }
 
         // Return the result
@@ -292,5 +332,9 @@ impl State {
             // Nothing to do
             futures::future::pending().await
         }
+    }
+
+    pub fn drain_events(&mut self) -> Vec<Event> {
+        self.file_events.drain(..).collect()
     }
 }

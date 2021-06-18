@@ -11,13 +11,16 @@ use structopt::StructOpt;
 
 use gdk_pixbuf::prelude::*;
 use gio::prelude::*;
-use gtk::prelude::*;
+use glib::clone;
+use gtk::{prelude::*, ListBox};
 use gtk::{Application, ApplicationWindow, Builder, FileChooserNative, MenuItem, Statusbar};
 
 mod svc;
 use svc::*;
 
 mod tr;
+
+mod ui;
 
 #[derive(Debug, StructOpt)]
 struct Opts {
@@ -63,7 +66,7 @@ impl Ui {
         }
     }
 
-    fn handle_message(&self, item: Message, statusbar: &Statusbar) {
+    fn handle_message(&self, item: Message, statusbar: &Statusbar, file_list: &gio::ListStore) {
         match item {
             Message::Status(message) => {
                 let context = statusbar.get_context_id("description");
@@ -106,6 +109,34 @@ impl Ui {
                 // Re-enable the window
                 self.window.set_sensitive(true);
             }
+            Message::FileStateUpdate(events) => {
+                for event in events {
+                    match event {
+                        Event::Added { start, files } => {
+                            file_list.splice(
+                                start as _,
+                                0,
+                                &files
+                                    .into_iter()
+                                    .map(ui::row_data::RowData::new)
+                                    .map(|row_data| row_data.upcast::<glib::Object>())
+                                    .collect::<Vec<_>>(),
+                            );
+                        }
+                        Event::Changed { start, files } => {
+                            file_list.splice(
+                                start as _,
+                                files.len() as _,
+                                &files
+                                    .into_iter()
+                                    .map(ui::row_data::RowData::new)
+                                    .map(|row_data| row_data.upcast::<glib::Object>())
+                                    .collect::<Vec<_>>(),
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -139,12 +170,40 @@ impl Ui {
         );
 
         let menu_quit: MenuItem = builder.get_object("menu_quit").unwrap();
-        menu_quit.connect_activate({
-            let window = window.clone();
+        menu_quit.connect_activate(clone!(@weak window => move |_| {
+            window.close();
+        }));
 
-            move |_| {
-                window.close();
-            }
+        // Create the list model
+        let list = gio::ListStore::new(ui::row_data::RowData::static_type());
+        let listbox: ListBox = builder.get_object("listbox").unwrap();
+        listbox.bind_model(Some(&list), move |item| {
+            let box_ = gtk::ListBoxRow::new();
+            box_.set_margin_start(12);
+            box_.set_margin_end(12);
+
+            let item = item.downcast_ref::<ui::row_data::RowData>().unwrap();
+
+            let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+
+            let label_path = gtk::Label::new(None);
+            item.bind_property("path", &label_path, "label")
+                .flags(glib::BindingFlags::DEFAULT | glib::BindingFlags::SYNC_CREATE)
+                .build();
+            label_path.set_halign(gtk::Align::Start);
+            hbox.pack_start(&label_path, true, true, 0);
+
+            let label_state = gtk::Label::new(None);
+            item.bind_property("state", &label_state, "label")
+                .flags(glib::BindingFlags::DEFAULT | glib::BindingFlags::SYNC_CREATE)
+                .build();
+            hbox.pack_start(&label_state, false, false, 0);
+
+            box_.add(&hbox);
+
+            box_.show_all();
+
+            box_.upcast::<gtk::Widget>()
         });
 
         rx.attach(None, {
@@ -152,7 +211,7 @@ impl Ui {
             let statusbar: Statusbar = builder.get_object("statusbar").unwrap();
 
             move |item| {
-                ui.handle_message(item, &statusbar);
+                ui.handle_message(item, &statusbar, &list);
                 glib::Continue(true)
             }
         });
