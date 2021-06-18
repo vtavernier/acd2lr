@@ -16,8 +16,13 @@ if [[ $ARCHIVE == *.tar.* ]]; then
 	TOP_LEVEL_DIR=$(tar tf "$ARCHIVE" | head -1 | cut -d/ -f1)
 	tar -C "$THEME_PATH" --strip-components=2 -xf "$ARCHIVE" "$TOP_LEVEL_DIR/gtk-3.0"
 else
-	# Just copy from the source
-	cp -rav "$ARCHIVE/gtk-3.0" "$(dirname "$THEME_PATH")"
+	if [ -d "$ARCHIVE/gtk-3.0" ]; then
+		# Just copy from the source
+		cp -rav "$ARCHIVE/gtk-3.0" "$(dirname "$THEME_PATH")"
+	else
+		# Make this optional, since Adwaita is built-in
+		echo "$ARCHIVE not found" >&2
+	fi
 fi
 
 # Write the settings file
