@@ -221,23 +221,28 @@ impl XPacketData {
 }
 
 impl Container {
-    pub async fn open(mut file: async_std::fs::File) -> std::io::Result<Self> {
+    pub async fn open(mut file: async_std::fs::File) -> Result<Self, (std::io::Error, File)> {
         // Read the header
         let mut start_buf: [u8; 16] = [0; 16];
-        file.read_exact(&mut start_buf).await?;
-
-        if start_buf.starts_with(b"<x:xmp") {
-            // A .xmp file
-            Ok(Self {
-                data: ContainerData::Xmp(XmpData { fh: file }),
-            })
-        } else {
-            // A file maybe containing an XPacket
-            Ok(Self {
-                data: ContainerData::XPacket(XPacketData {
-                    inner: crate::file::XPacketFile::open(file).await?,
-                }),
-            })
+        match file.read_exact(&mut start_buf).await {
+            Ok(_) => {
+                if start_buf.starts_with(b"<x:xmp") {
+                    // A .xmp file
+                    Ok(Self {
+                        data: ContainerData::Xmp(XmpData { fh: file }),
+                    })
+                } else {
+                    // A file maybe containing an XPacket
+                    Ok(Self {
+                        data: ContainerData::XPacket(XPacketData {
+                            inner: crate::file::XPacketFile::open(file).await?,
+                        }),
+                    })
+                }
+            }
+            Err(e) => {
+                return Err((e, file));
+            }
         }
     }
 

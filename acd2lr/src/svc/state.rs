@@ -4,31 +4,34 @@ use std::{
     convert::TryFrom,
     path::{Path, PathBuf},
     sync::Arc,
+    time::SystemTime,
 };
 
 use acd2lr_core::{
     acdsee::AcdSeeError,
-    container::{Container, ContainerError, ContainerRewriteError},
+    container::{Container, ContainerError, ContainerRewriteError, ContainerWriteError},
     xmp::{rules, WriteError},
 };
-use async_std::fs::File;
+use async_std::fs::{File, OpenOptions};
 use strum_macros::{AsRefStr, EnumDiscriminants};
 use thiserror::Error;
 
 pub const SUPPORTED_EXTS: &[&str] = &["jpeg", "jpg", "tif", "tiff", "xmp", "xpacket"];
 
-#[derive(Debug, EnumDiscriminants)]
+#[derive(Debug, Clone, EnumDiscriminants)]
 #[strum_discriminants(name(FileStateKind), derive(AsRefStr))]
 pub enum FileState {
     Init,
-    IoError(std::io::Error),
+    IoError(Arc<std::io::Error>),
     NoXmpData,
     NoAcdData,
-    ContainerError(ContainerError),
-    XmpRewriteError(WriteError),
-    InvalidAcdseeData(AcdSeeError),
-    Ready(Vec<u8>),
-    RewriteError(ContainerRewriteError),
+    ContainerError(Arc<ContainerError>),
+    XmpRewriteError(Arc<WriteError>),
+    InvalidAcdseeData(Arc<AcdSeeError>),
+    Ready(Arc<Vec<u8>>),
+    RewriteError(Arc<ContainerRewriteError>),
+    Complete,
+    ApplyError(Arc<ContainerWriteError>),
 }
 
 impl std::fmt::Display for FileState {
@@ -46,6 +49,8 @@ impl std::fmt::Display for FileState {
             FileState::RewriteError(error) => {
                 write!(f, "Erreur de préparation à la réecriture: {}", error)
             }
+            FileState::Complete => write!(f, "Succès"),
+            FileState::ApplyError(error) => write!(f, "Erreur de réecriture: {}", error),
         }
     }
 }
@@ -54,14 +59,20 @@ impl From<Result<FileState, ContainerError>> for FileState {
     fn from(result: Result<FileState, ContainerError>) -> Self {
         match result {
             Ok(result) => result,
-            Err(error) => Self::ContainerError(error),
+            Err(error) => Self::ContainerError(Arc::new(error)),
         }
     }
 }
 
 impl From<std::io::Error> for FileState {
     fn from(io: std::io::Error) -> Self {
-        Self::IoError(io)
+        Self::IoError(Arc::new(io))
+    }
+}
+
+impl From<ContainerWriteError> for FileState {
+    fn from(e: ContainerWriteError) -> Self {
+        Self::ApplyError(Arc::new(e))
     }
 }
 
@@ -87,12 +98,22 @@ impl MetadataFile {
         &self.state
     }
 
-    async fn get_rewrite_state(&self, file: File) -> Result<FileState, ContainerError> {
+    async fn get_rewrite_state(
+        &self,
+        file: File,
+    ) -> Result<(FileState, File), (ContainerError, File)> {
         // Open the container
-        let mut container = Container::open(file).await?;
+        let mut container = Container::open(file)
+            .await
+            .map_err(|(e, f)| (e.into(), f))?;
 
         // Read the xmp data
-        let data = container.read_xmp().await?;
+        let data = match container.read_xmp().await {
+            Ok(data) => data,
+            Err(e) => {
+                return Err((e, container.into_inner()));
+            }
+        };
 
         if let Some(xmp) = data {
             // Try to read the acdsee data
@@ -101,7 +122,7 @@ impl MetadataFile {
                     // We have some data, check if it requires rewrites?
                     let mut rules = acd.to_ruleset();
                     if rules.is_empty() {
-                        return Ok(FileState::NoAcdData);
+                        return Ok((FileState::NoAcdData, container.into_inner()));
                     } else {
                         // There are some rules, so try to apply them
                         rules.push(rules::xmp_metadata_date());
@@ -112,22 +133,34 @@ impl MetadataFile {
                                 match container.prepare_write(&rewritten).await {
                                     Ok(packet) => {
                                         // Everything works, including the rewrite back to the file
-                                        Ok(FileState::Ready(packet))
+                                        Ok((
+                                            FileState::Ready(Arc::new(packet)),
+                                            container.into_inner(),
+                                        ))
                                     }
                                     Err(error) => {
                                         // Failed the last part
-                                        Ok(FileState::RewriteError(error))
+                                        Ok((
+                                            FileState::RewriteError(Arc::new(error)),
+                                            container.into_inner(),
+                                        ))
                                     }
                                 }
                             }
-                            Err(error) => Ok(FileState::XmpRewriteError(error)),
+                            Err(error) => Ok((
+                                FileState::XmpRewriteError(Arc::new(error)),
+                                container.into_inner(),
+                            )),
                         }
                     }
                 }
-                Err(error) => Ok(FileState::InvalidAcdseeData(error)),
+                Err(error) => Ok((
+                    FileState::InvalidAcdseeData(Arc::new(error)),
+                    container.into_inner(),
+                )),
             }
         } else {
-            Ok(FileState::NoXmpData)
+            Ok((FileState::NoXmpData, container.into_inner()))
         }
     }
 
@@ -136,7 +169,14 @@ impl MetadataFile {
         match File::open(&*self.path).await {
             Ok(file) => match file.metadata().await {
                 Ok(metadata) => match metadata.modified() {
-                    Ok(modified) => (self.get_rewrite_state(file).await.into(), Some(modified)),
+                    Ok(modified) => (
+                        self.get_rewrite_state(file)
+                            .await
+                            .map(|(s, _)| s)
+                            .map_err(|(e, _)| e)
+                            .into(),
+                        Some(modified),
+                    ),
                     Err(error) => (error.into(), None),
                 },
                 Err(error) => (error.into(), None),
@@ -146,8 +186,89 @@ impl MetadataFile {
     }
 
     async fn check_rewrite(&self) -> Self {
+        // No state check, since we can always check a rewrite
+
         let path = self.path.clone();
         let (result, modified) = self.check_rewrite_inner().await;
+
+        Self {
+            path,
+            last_check: modified,
+            state: result,
+        }
+    }
+
+    async fn get_apply_state(
+        &self,
+        file: File,
+        modified: SystemTime,
+    ) -> Result<FileState, ContainerError> {
+        // Check if we need to check_rewrite first
+        let reread_state;
+        let (state, file) = if self
+            .last_check
+            .map(|known_modified| modified > known_modified)
+            .unwrap_or(true)
+        {
+            // The file was modified, thus the known state is stale
+            // Try to rewrite it first
+            let (state, file) = match self.get_rewrite_state(file).await {
+                Ok((res, file)) => (FileState::from(Ok(res)), file),
+                Err((err, file)) => (FileState::from(Err(err)), file),
+            };
+
+            reread_state = state;
+            (&reread_state, file)
+        } else {
+            (self.state(), file)
+        };
+
+        // If the new state is ready, we can proceed
+        match state {
+            FileState::Ready(bytes) => {
+                // Open the container
+                let mut container = match Container::open(file).await {
+                    Ok(container) => container,
+                    Err((e, _)) => {
+                        return Ok(e.into());
+                    }
+                };
+
+                // Write the data
+                match container.write(&bytes[..]).await {
+                    Ok(_) => Ok(FileState::Complete),
+                    Err(e) => Ok(e.into()),
+                }
+            }
+            other => Ok(other.clone()),
+        }
+    }
+
+    async fn apply_inner(&self) -> (FileState, Option<std::time::SystemTime>) {
+        // Open the file r/w
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&*self.path)
+            .await
+        {
+            Ok(file) => match file.metadata().await {
+                Ok(metadata) => match metadata.modified() {
+                    Ok(modified) => (
+                        self.get_apply_state(file, modified).await.into(),
+                        Some(modified),
+                    ),
+                    Err(error) => (error.into(), None),
+                },
+                Err(error) => (error.into(), None),
+            },
+            Err(error) => (error.into(), None),
+        }
+    }
+
+    async fn apply(&self) -> Self {
+        let path = self.path.clone();
+        let (result, modified) = self.apply_inner().await;
 
         Self {
             path,
@@ -239,40 +360,78 @@ enum BackgroundTask {
         index: usize,
         file: Arc<MetadataFile>,
     },
+    Apply {
+        index: usize,
+        file: Arc<MetadataFile>,
+    },
 }
 
-impl BackgroundTask {
-    #[tracing::instrument(skip(state))]
-    async fn try_rewrite(index: usize, file: Arc<MetadataFile>, state: &mut State) {
+macro_rules! update_file {
+    ($index:ident, $file:ident, $state:ident, $fn:path) => {
         // Find the file slot
-        if let Some(state_file) = state.files.get_mut(index) {
+        if let Some(state_file) = $state.files.get_mut($index) {
             // Check that the path matches
-            if state_file.path.as_ref() != file.path.as_ref() {
-                tracing::warn!(index = %index, expected = %file.path.display(), actual = %file.path.display(), "index mismatch");
+            if state_file.path.as_ref() != $file.path.as_ref() {
+                tracing::warn!(index = %$index,
+                               expected = %$file.path.display(),
+                               actual = %$file.path.display(),
+                               "index mismatch");
                 return;
             }
 
-            // We are working on the right file
-            // Try reading the metadata
-            let new_file = file.check_rewrite().await;
-            tracing::info!(new_state = ?FileStateKind::from(&new_file.state).as_ref(), "checked rewrite");
+            $fn($file, state_file).await;
 
-            // Update the slot
-            *state_file = Arc::new(new_file);
             // Notify slot update
-            state.file_events.push(Event::Changed {
-                start: index,
+            $state.file_events.push(Event::Changed {
+                start: $index,
                 files: vec![state_file.clone()],
             });
         } else {
-            tracing::warn!(index = %index, file = %file.path.display(), "no file at index");
+            tracing::warn!($index = %$index,
+                           file = %$file.path.display(),
+                           "no file at index");
         }
+    }
+}
+
+impl BackgroundTask {
+    async fn try_rewrite_inner(file: Arc<MetadataFile>, state_file: &mut Arc<MetadataFile>) {
+        // We are working on the right file
+        // Try reading the metadata
+        let new_file = file.check_rewrite().await;
+        tracing::info!(new_state = ?FileStateKind::from(&new_file.state).as_ref(), "checked rewrite");
+
+        // Update the slot
+        *state_file = Arc::new(new_file);
+    }
+
+    async fn apply_inner(file: Arc<MetadataFile>, state_file: &mut Arc<MetadataFile>) {
+        // We are working on the right file
+        // Try reading the metadata
+        let new_file = file.apply().await;
+        tracing::info!(new_state = ?FileStateKind::from(&new_file.state).as_ref(), "applied rewrite");
+
+        // Update the slot
+        *state_file = Arc::new(new_file);
+    }
+
+    #[tracing::instrument(skip(state))]
+    async fn try_rewrite(index: usize, file: Arc<MetadataFile>, state: &mut State) {
+        update_file!(index, file, state, Self::try_rewrite_inner)
+    }
+
+    #[tracing::instrument(skip(state))]
+    async fn apply(index: usize, file: Arc<MetadataFile>, state: &mut State) {
+        update_file!(index, file, state, Self::apply_inner)
     }
 
     async fn run(self, state: &mut State) {
         match self {
             BackgroundTask::TryRewrite { index, file } => {
                 Self::try_rewrite(index, file, state).await;
+            }
+            BackgroundTask::Apply { index, file } => {
+                Self::apply(index, file, state).await;
             }
         }
     }
@@ -346,6 +505,24 @@ impl State {
 
         // Return the result
         (results, self.pending_tasks.len())
+    }
+
+    /// # Returns
+    ///
+    /// The pending number of background tasks.
+    pub fn start_apply(&mut self) -> usize {
+        for (index, file) in self.files.iter().enumerate() {
+            if matches!(file.state, FileState::Ready(_)) {
+                // The file is ready to be rewritten
+                tracing::debug!(path = %file.path().display(), "queuing file for apply");
+                self.pending_tasks.push_back(BackgroundTask::Apply {
+                    index,
+                    file: file.clone(),
+                });
+            }
+        }
+
+        self.pending_tasks.len()
     }
 
     pub async fn poll_bg(&mut self) -> BackgroundProgress {

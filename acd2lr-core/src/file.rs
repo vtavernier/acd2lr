@@ -80,60 +80,80 @@ impl XPacketFile {
         &self.fh
     }
 
-    pub async fn open(mut file: File) -> std::io::Result<Self> {
+    pub async fn open(mut file: File) -> Result<Self, (std::io::Error, File)> {
         // Start at the beginning
-        file.seek(SeekFrom::Start(0)).await?;
+        match file.seek(SeekFrom::Start(0)).await {
+            Ok(_) => {
+                // Wrap with a BufReader
+                let mut buf = BufReader::new(file);
 
-        // Wrap with a BufReader
-        let mut buf = BufReader::new(file);
+                // Buffer for looking for markers
+                let mut haystack_buffer: [u8; 128] = [0; 128];
 
-        // Buffer for looking for markers
-        let mut haystack_buffer: [u8; 128] = [0; 128];
+                // Find xpacket beginning
+                const XPACKET_BEGIN: &[u8] = b"<?xpacket begin";
+                let start = if let Some(start) = match Self::find_needle(
+                    &mut buf,
+                    &XPACKET_BEGIN,
+                    &mut haystack_buffer[..XPACKET_BEGIN.len()],
+                )
+                .await
+                {
+                    Ok(res) => res,
+                    Err(e) => {
+                        return Err((e, buf.into_inner()));
+                    }
+                } {
+                    start
+                } else {
+                    return Ok(Self::no_xpacket(buf));
+                };
 
-        // Find xpacket beginning
-        const XPACKET_BEGIN: &[u8] = b"<?xpacket begin";
-        let start = if let Some(start) = Self::find_needle(
-            &mut buf,
-            &XPACKET_BEGIN,
-            &mut haystack_buffer[..XPACKET_BEGIN.len()],
-        )
-        .await?
-        {
-            start
-        } else {
-            return Ok(Self::no_xpacket(buf));
-        };
+                // Find xpacket end, starting at the current position
+                const XPACKET_END: &[u8] = b"<?xpacket end";
+                let _ = if let Some(_) = match Self::find_needle(
+                    &mut buf,
+                    &XPACKET_END,
+                    &mut haystack_buffer[..XPACKET_END.len()],
+                )
+                .await
+                {
+                    Ok(res) => res,
+                    Err(e) => {
+                        return Err((e, buf.into_inner()));
+                    }
+                } {
+                    // nothing to do, we use this to advance the stream
+                } else {
+                    return Ok(Self::no_xpacket(buf));
+                };
 
-        // Find xpacket end, starting at the current position
-        const XPACKET_END: &[u8] = b"<?xpacket end";
-        let _ = if let Some(_) = Self::find_needle(
-            &mut buf,
-            &XPACKET_END,
-            &mut haystack_buffer[..XPACKET_END.len()],
-        )
-        .await?
-        {
-            // nothing to do, we use this to advance the stream
-        } else {
-            return Ok(Self::no_xpacket(buf));
-        };
+                // After the start of the end marker, we want to find the ?> that marks the actual end
+                const BOUND_MARKER: &[u8] = b"?>";
+                let end = if let Some(end) = match Self::find_needle(
+                    &mut buf,
+                    &BOUND_MARKER,
+                    &mut haystack_buffer[..BOUND_MARKER.len()],
+                )
+                .await
+                {
+                    Ok(res) => res,
+                    Err(e) => {
+                        return Err((e, buf.into_inner()));
+                    }
+                } {
+                    // We want the end of the needle to return [start, end)
+                    end + BOUND_MARKER.len()
+                } else {
+                    return Ok(Self::no_xpacket(buf));
+                };
 
-        // After the start of the end marker, we want to find the ?> that marks the actual end
-        const BOUND_MARKER: &[u8] = b"?>";
-        let end = if let Some(end) = Self::find_needle(
-            &mut buf,
-            &BOUND_MARKER,
-            &mut haystack_buffer[..BOUND_MARKER.len()],
-        )
-        .await?
-        {
-            // We want the end of the needle to return [start, end)
-            end + BOUND_MARKER.len()
-        } else {
-            return Ok(Self::no_xpacket(buf));
-        };
-
-        Ok(Self::with_xpacket(buf, start..end))
+                Ok(Self::with_xpacket(buf, start..end))
+            }
+            Err(e) => {
+                return Err((e, file));
+            }
+        }
     }
 
     pub async fn read_packet_bytes(&mut self) -> std::io::Result<Option<Vec<u8>>> {

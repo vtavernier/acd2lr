@@ -13,6 +13,7 @@ pub use state::*;
 #[derive(Debug)]
 pub enum Request {
     OpenPaths(Vec<PathBuf>),
+    Apply,
 }
 
 pub type RequestSender = channel::Sender<Request>;
@@ -54,10 +55,20 @@ impl Service {
                             Request::OpenPaths(paths) => {
                                 let (result, bg_tasks) = state.add_files(paths);
 
-                                current_progress_total = Some(bg_tasks);
+                                if bg_tasks != 0 {
+                                    current_progress_total = Some(bg_tasks);
+                                }
+
                                 self.ui
                                     .send(Message::AddPathsComplete(result))
                                     .unwrap();
+                            },
+                            Request::Apply => {
+                                let bg_tasks = state.start_apply();
+
+                                if bg_tasks != 0 {
+                                    current_progress_total = Some(bg_tasks);
+                                }
                             }
                         },
                         Err(_) => {
@@ -127,6 +138,7 @@ pub struct ServiceHandle {
 
 impl ServiceHandle {
     pub fn send_request(&self, request: Request) {
+        tracing::debug!(request = ?request, "sending");
         block_on(self.tx.send(request)).expect("failed sending request")
     }
 }

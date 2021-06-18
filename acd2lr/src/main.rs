@@ -224,11 +224,21 @@ impl Ui {
             box_.upcast::<gtk::Widget>()
         });
 
+        let button_apply: Button = builder.get_object("button_apply").unwrap();
+        button_apply.connect_clicked({
+            let svc = self.service.clone();
+
+            move |_| {
+                if let Some(service) = &*svc.borrow() {
+                    service.send_request(Request::Apply);
+                }
+            }
+        });
+
         rx.attach(None, {
             let ui = self.clone();
             let statusbar: Statusbar = builder.get_object("statusbar").unwrap();
             let progress: ProgressBar = builder.get_object("progressbar").unwrap();
-            let button_apply: Button = builder.get_object("button_apply").unwrap();
 
             move |item| {
                 ui.handle_message(item, &statusbar, &list, &progress, &button_apply);
