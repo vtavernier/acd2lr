@@ -31,4 +31,4 @@ installer.exe: installer.nsi
 clean:
 	cargo clean
 
-.PHONY: all build-windows build-windows-release package-windows
+.PHONY: all build-windows build-windows-release package-windows installer.exe
