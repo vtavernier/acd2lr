@@ -126,6 +126,9 @@ impl XmpData {
     }
 
     pub async fn write(&mut self, packet: &[u8]) -> Result<(), ContainerWriteError> {
+        // Seek to the beginning
+        self.fh.seek(SeekFrom::Start(0)).await?;
+
         // Truncate the file
         self.fh.set_len(0).await?;
 
@@ -222,6 +225,14 @@ impl XPacketData {
 
 impl Container {
     pub async fn open(mut file: async_std::fs::File) -> Result<Self, (std::io::Error, File)> {
+        // Seek back to the beginning
+        match file.seek(SeekFrom::Start(0)).await {
+            Ok(_) => {}
+            Err(e) => {
+                return Err((e, file));
+            }
+        }
+
         // Read the header
         let mut start_buf: [u8; 16] = [0; 16];
         match file.read_exact(&mut start_buf).await {
