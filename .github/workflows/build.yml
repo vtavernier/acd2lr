@@ -11,6 +11,16 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
+      - uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cargo
+            target
+          key: ${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain') }}
+            ${{ runner.os }}-
+
       - uses: actions-rs/toolchain@v1
         with:
           target: x86_64-pc-windows-gnu
