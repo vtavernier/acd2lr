@@ -1,159 +1,240 @@
-// Our GObject subclass for carrying a name and count for the ListBox model
-//
-// Both name and count are stored in a RefCell to allow for interior mutability
-// and are exposed via normal GObject properties. This allows us to use property
-// bindings below to bind the values with what widgets display in the UI
-pub mod row_data {
-    use std::sync::Arc;
+use std::{cell::RefCell, convert::TryInto, path::PathBuf, rc::Rc};
 
-    use glib::subclass;
-    use glib::subclass::prelude::*;
-    use glib::translate::*;
-    use glib::GBoxed;
-    use glib::{glib_object_impl, glib_object_subclass, glib_wrapper};
-    use glib::{Cast, StaticType, ToValue};
+use gdk_pixbuf::prelude::*;
+use gio::prelude::*;
+use glib::clone;
+use gtk::{
+    prelude::*, ApplicationWindow, Builder, Button, ComboBox, FileChooserNative, ListBox, MenuItem,
+    ProgressBar, Statusbar,
+};
 
-    use crate::svc::MetadataFile;
+mod row_data;
+use row_data::RowData;
 
-    #[derive(Clone, GBoxed)]
-    #[gboxed(type_name = "ArcFile")]
-    struct ArcFile(Arc<MetadataFile>);
+use crate::svc::*;
 
-    impl std::ops::Deref for ArcFile {
-        type Target = MetadataFile;
+#[derive(Clone)]
+pub struct Ui {
+    window: ApplicationWindow,
+    service: Rc<RefCell<Option<ServiceHandle>>>,
+    builder: Builder,
+}
 
-        fn deref(&self) -> &Self::Target {
-            self.0.as_ref()
+impl Ui {
+    pub fn new(
+        window: ApplicationWindow,
+        service: Rc<RefCell<Option<ServiceHandle>>>,
+        builder: Builder,
+    ) -> Self {
+        Self {
+            window,
+            service,
+            builder,
         }
     }
 
-    // Implementation sub-module of the GObject
-    mod imp {
-        use super::*;
-        use std::cell::RefCell;
+    fn open_callback<T>(self, filechooser: FileChooserNative) -> impl for<'r> Fn(&'r T) -> () {
+        move |_: &_| {
+            filechooser.run();
 
-        // The actual data structure that stores our values. This is not accessible
-        // directly from the outside.
-        pub struct RowData {
-            inner: RefCell<Option<ArcFile>>,
+            let filenames = filechooser.get_filenames();
+            self.add_files(filenames);
         }
+    }
 
-        // GObject property definitions for our two values
-        static PROPERTIES: [subclass::Property; 3] = [
-            subclass::Property("path", |path| {
-                glib::ParamSpec::string(
-                    path,
-                    "Path",
-                    "Path to the target file",
-                    None, // Default value
-                    glib::ParamFlags::READABLE,
-                )
-            }),
-            subclass::Property("state", |state| {
-                glib::ParamSpec::string(
-                    state,
-                    "State",
-                    "File processing state",
-                    None, // Default value
-                    glib::ParamFlags::READABLE,
-                )
-            }),
-            subclass::Property("inner", |inner| {
-                glib::ParamSpec::boxed(
-                    inner,
-                    "Inner",
-                    "Inner file structure",
-                    ArcFile::get_type(),
-                    glib::ParamFlags::READWRITE,
-                )
-            }),
-        ];
+    pub fn add_files(&self, filenames: Vec<PathBuf>) {
+        if !filenames.is_empty() {
+            self.window.set_sensitive(false);
 
-        // Basic declaration of our type for the GObject type system
-        impl ObjectSubclass for RowData {
-            const NAME: &'static str = "RowData";
-            type ParentType = glib::Object;
-            type Instance = subclass::simple::InstanceStruct<Self>;
-            type Class = subclass::simple::ClassStruct<Self>;
-
-            glib_object_subclass!();
-
-            // Called exactly once before the first instantiation of an instance. This
-            // sets up any type-specific things, in this specific case it installs the
-            // properties so that GObject knows about their existence and they can be
-            // used on instances of our type
-            fn class_init(klass: &mut Self::Class) {
-                klass.install_properties(&PROPERTIES);
-            }
-
-            // Called once at the very beginning of instantiation of each instance and
-            // creates the data structure that contains all our state
-            fn new() -> Self {
-                Self {
-                    inner: RefCell::new(None),
-                }
+            if let Some(service) = &*self.service.borrow() {
+                service.send_request(Request::OpenPaths(filenames));
             }
         }
+    }
 
-        // The ObjectImpl trait provides the setters/getters for GObject properties.
-        // Here we need to provide the values that are internally stored back to the
-        // caller, or store whatever new value the caller is providing.
-        //
-        // This maps between the GObject properties and our internal storage of the
-        // corresponding values of the properties.
-        impl ObjectImpl for RowData {
-            glib_object_impl!();
+    fn handle_message(
+        &self,
+        item: Message,
+        statusbar: &Statusbar,
+        file_list: &gio::ListStore,
+        progress: &ProgressBar,
+        button_apply: &Button,
+    ) {
+        match item {
+            Message::Status(message) => {
+                let context = statusbar.get_context_id("description");
+                statusbar.push(context, &message);
+            }
+            Message::AddPathsComplete(results) => {
+                let ok_count = results.iter().filter(|res| res.is_ok()).count();
+                let total = results.len();
+                let err_count = total - ok_count;
 
-            fn set_property(&self, _obj: &glib::Object, id: usize, value: &glib::Value) {
-                let prop = &PROPERTIES[id];
+                info!(
+                    ui = true,
+                    "Fichiers ajoutés: {} ; Erreurs: {}", ok_count, err_count
+                );
 
-                match *prop {
-                    subclass::Property("inner", ..) => {
-                        if let Ok(val) = value.get_some::<&ArcFile>() {
-                            *self.inner.borrow_mut() = Some(val.clone());
+                let dialog = gtk::MessageDialog::new(
+                    Some(&self.window),
+                    gtk::DialogFlags::DESTROY_WITH_PARENT | gtk::DialogFlags::MODAL,
+                    if total > 0 {
+                        if ok_count == 0 {
+                            gtk::MessageType::Error
+                        } else if err_count == 0 {
+                            gtk::MessageType::Info
+                        } else {
+                            gtk::MessageType::Warning
+                        }
+                    } else {
+                        gtk::MessageType::Warning
+                    },
+                    gtk::ButtonsType::Ok,
+                    &format!("Fichiers ajoutés: {}\nErreurs: {}", ok_count, err_count),
+                );
+
+                dialog.connect_response(|dialog, _| {
+                    dialog.close();
+                });
+
+                dialog.run();
+
+                // Re-enable the window
+                self.window.set_sensitive(true);
+            }
+            Message::FileStateUpdate(events) => {
+                for event in events {
+                    match event {
+                        Event::Added { start, files } => {
+                            file_list.splice(
+                                start as _,
+                                0,
+                                &files
+                                    .into_iter()
+                                    .map(RowData::new)
+                                    .map(|row_data| row_data.upcast::<glib::Object>())
+                                    .collect::<Vec<_>>(),
+                            );
+                        }
+                        Event::Changed { start, files } => {
+                            file_list.splice(
+                                start as _,
+                                files.len() as _,
+                                &files
+                                    .into_iter()
+                                    .map(RowData::new)
+                                    .map(|row_data| row_data.upcast::<glib::Object>())
+                                    .collect::<Vec<_>>(),
+                            );
                         }
                     }
-                    _ => {}
                 }
             }
-
-            fn get_property(&self, _obj: &glib::Object, id: usize) -> Result<glib::Value, ()> {
-                let prop = &PROPERTIES[id];
-
-                if let Some(inner) = self.inner.borrow().as_ref() {
-                    match *prop {
-                        subclass::Property("inner", ..) => Ok(inner.clone().to_value()),
-                        subclass::Property("path", ..) => {
-                            Ok(inner.path().display().to_string().to_value())
-                        }
-                        subclass::Property("state", ..) => Ok(inner.state().to_string().to_value()),
-                        _ => Err(()),
-                    }
+            Message::ProgressUpdate { current, total } => {
+                if current == total {
+                    progress.set_fraction(0.);
+                    button_apply.set_sensitive(true);
                 } else {
-                    Err(())
+                    progress.set_fraction(current as f64 / total as f64);
+                    button_apply.set_sensitive(false);
                 }
             }
         }
     }
 
-    // Public part of the RowData type. This behaves like a normal gtk-rs-style GObject
-    // binding
-    glib_wrapper! {
-        pub struct RowData(Object<subclass::simple::InstanceStruct<imp::RowData>, subclass::simple::ClassStruct<imp::RowData>, RowDataClass>);
+    pub fn build(&self, rx: glib::Receiver<Message>) {
+        let window = self.window.clone();
+        let builder = self.builder.clone();
 
-        match fn {
-            get_type => || imp::RowData::get_type().to_glib(),
-        }
-    }
+        // Set window icon
+        {
+            let icon_loader = gdk_pixbuf::PixbufLoader::new();
+            icon_loader.write(include_bytes!("../app.png")).unwrap();
+            icon_loader.close().unwrap();
 
-    // Constructor for new instances. This simply calls glib::Object::new() with
-    // initial values for our two properties and then returns the new instance
-    impl RowData {
-        pub fn new(inner: Arc<MetadataFile>) -> RowData {
-            glib::Object::new(Self::static_type(), &[("inner", &ArcFile(inner))])
-                .expect("Failed to create row data")
-                .downcast()
-                .expect("Created row data is of wrong type")
+            if let Some(icon) = icon_loader.get_pixbuf() {
+                window.set_icon(Some(&icon));
+            } else {
+                warn!("no icon set");
+            }
         }
+
+        let menu_open: MenuItem = builder.get_object("menu_open").unwrap();
+        menu_open.connect_activate(
+            self.clone()
+                .open_callback(builder.get_object("filechooser").unwrap()),
+        );
+
+        let menu_open_folder: MenuItem = builder.get_object("menu_open_folder").unwrap();
+        menu_open_folder.connect_activate(
+            self.clone()
+                .open_callback(builder.get_object("filechooser_folder").unwrap()),
+        );
+
+        let menu_quit: MenuItem = builder.get_object("menu_quit").unwrap();
+        menu_quit.connect_activate(clone!(@weak window => move |_| {
+            window.close();
+        }));
+
+        // Create the list model
+        let list = gio::ListStore::new(RowData::static_type());
+        let listbox: ListBox = builder.get_object("listbox").unwrap();
+        listbox.bind_model(Some(&list), move |item| {
+            let box_ = gtk::ListBoxRow::new();
+            box_.set_margin_start(12);
+            box_.set_margin_end(12);
+
+            let item = item.downcast_ref::<RowData>().unwrap();
+
+            let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+
+            let label_path = gtk::Label::new(None);
+            item.bind_property("path", &label_path, "label")
+                .flags(glib::BindingFlags::DEFAULT | glib::BindingFlags::SYNC_CREATE)
+                .build();
+            label_path.set_halign(gtk::Align::Start);
+            hbox.pack_start(&label_path, true, true, 0);
+
+            let label_state = gtk::Label::new(None);
+            item.bind_property("state", &label_state, "label")
+                .flags(glib::BindingFlags::DEFAULT | glib::BindingFlags::SYNC_CREATE)
+                .build();
+            hbox.pack_start(&label_state, false, false, 0);
+
+            box_.add(&hbox);
+
+            box_.show_all();
+
+            box_.upcast::<gtk::Widget>()
+        });
+
+        let button_apply: Button = builder.get_object("button_apply").unwrap();
+        let combobox_backups: ComboBox = builder.get_object("combobox_backups").unwrap();
+        button_apply.connect_clicked({
+            let svc = self.service.clone();
+
+            move |_| {
+                if let Some(service) = &*svc.borrow() {
+                    service.send_request(Request::Apply(
+                        combobox_backups
+                            .get_active()
+                            .unwrap_or(0)
+                            .try_into()
+                            .unwrap(),
+                    ));
+                }
+            }
+        });
+
+        rx.attach(None, {
+            let ui = self.clone();
+            let statusbar: Statusbar = builder.get_object("statusbar").unwrap();
+            let progress: ProgressBar = builder.get_object("progressbar").unwrap();
+
+            move |item| {
+                ui.handle_message(item, &statusbar, &list, &progress, &button_apply);
+                glib::Continue(true)
+            }
+        });
     }
 }

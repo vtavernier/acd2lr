@@ -1,4 +1,4 @@
-use std::{mem::ManuallyDrop, path::PathBuf};
+use std::{convert::TryFrom, mem::ManuallyDrop, path::PathBuf};
 
 use async_std::{
     channel,
@@ -9,11 +9,31 @@ use futures::{select, FutureExt};
 mod state;
 pub use state::*;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BackupMode {
+    BackupKeep,
+    BackupOverwrite,
+    NoBackups,
+}
+
+impl TryFrom<u32> for BackupMode {
+    type Error = ();
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::BackupKeep),
+            1 => Ok(Self::BackupOverwrite),
+            2 => Ok(Self::NoBackups),
+            _ => Err(()),
+        }
+    }
+}
+
 /// A request from the UI to the backend
 #[derive(Debug)]
 pub enum Request {
     OpenPaths(Vec<PathBuf>),
-    Apply,
+    Apply(BackupMode),
 }
 
 pub type RequestSender = channel::Sender<Request>;
@@ -63,8 +83,8 @@ impl Service {
                                     .send(Message::AddPathsComplete(result))
                                     .unwrap();
                             },
-                            Request::Apply => {
-                                let bg_tasks = state.start_apply();
+                            Request::Apply(backup_mode) => {
+                                let bg_tasks = state.start_apply(backup_mode);
 
                                 if bg_tasks != 0 {
                                     current_progress_total = Some(bg_tasks);
