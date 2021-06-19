@@ -1,11 +1,11 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use glib::subclass;
 use glib::subclass::prelude::*;
 use glib::translate::*;
-use glib::GBoxed;
 use glib::{glib_object_impl, glib_object_subclass, glib_wrapper};
-use glib::{Cast, StaticType, ToValue};
+use glib::{Cast, GBoxed, ObjectExt, StaticType, ToValue};
 
 use crate::svc::MetadataFile;
 
@@ -148,5 +148,19 @@ impl RowData {
             .expect("Failed to create row data")
             .downcast()
             .expect("Created row data is of wrong type")
+    }
+
+    pub fn inner(&self) -> Arc<MetadataFile> {
+        // TODO: Don't clone and borrow instead
+        self.get_property("inner")
+            .unwrap()
+            .get_some::<&ArcFile>()
+            .unwrap()
+            .0
+            .clone()
+    }
+
+    pub fn path(&self) -> PathBuf {
+        self.inner().path().to_path_buf()
     }
 }

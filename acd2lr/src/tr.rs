@@ -71,5 +71,6 @@ pub fn install(tx: MessageSender) {
         .with(fmt_layer)
         .with(ForwardLayer { tx })
         .with(ErrorLayer::default())
-        .init();
+        .try_init()
+        .ok();
 }

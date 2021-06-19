@@ -1,4 +1,4 @@
-use std::{cell::RefCell, convert::TryInto, path::PathBuf, rc::Rc};
+use std::{cell::RefCell, convert::TryInto, ffi::OsString, path::PathBuf, rc::Rc};
 
 use gdk_pixbuf::prelude::*;
 use gio::prelude::*;
@@ -207,6 +207,55 @@ impl Ui {
 
             box_.upcast::<gtk::Widget>()
         });
+
+        listbox.set_activate_on_single_click(false);
+        listbox.connect_row_activated(clone!(@weak list => move |_, row| {
+            let file = list.get_object(row.get_index() as _).unwrap();
+            let file = file.downcast_ref::<RowData>().unwrap();
+            let path = file.path();
+
+            async_std::task::spawn(async move {
+                if let Some(p) = async_std::fs::canonicalize(path).await.ok() {
+                    tracing::info!(path = %p.display(), "opening");
+
+                    if cfg!(target_os = "linux") {
+                        async_std::process::Command::new("dbus-send").args(&[
+                            OsString::from("--session"),
+                            OsString::from("--print-reply"),
+                            OsString::from("--dest=org.freedesktop.FileManager1"),
+                            OsString::from("/org/freedesktop/FileManager1"),
+                            OsString::from("org.freedesktop.FileManager1.ShowItems"),
+                            {
+                                let mut s = OsString::from("array:string:file:");
+                                s.push(p);
+                                s
+                            },
+                            OsString::from("string:"),
+                        ]).spawn().ok();
+                    } else if cfg!(target_os = "windows") {
+                        if let Some(explorer) = std::env::var_os("WINDIR").map(|windir| {
+                            let mut path = std::path::PathBuf::from(windir);
+                            path.push("explorer.exe");
+                            path
+                        }) {
+                            async_std::process::Command::new(explorer).args(&[
+                                {
+                                    let mut s = OsString::from("/select,");
+                                    s.push(&p);
+                                    s
+                                }
+                            ]).spawn().ok();
+                        } else {
+                            tracing::warn!("windows folder not found");
+                            return;
+                        }
+                    } else {
+                        tracing::warn!("not supported");
+                        return;
+                    }
+                }
+            });
+        }));
 
         let button_apply: Button = builder.get_object("button_apply").unwrap();
         let combobox_backups: ComboBox = builder.get_object("combobox_backups").unwrap();
