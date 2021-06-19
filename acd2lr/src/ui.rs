@@ -219,7 +219,7 @@ impl Ui {
                     tracing::info!(path = %p.display(), "opening");
 
                     if cfg!(target_os = "linux") {
-                        async_std::process::Command::new("dbus-send").args(&[
+                        std::process::Command::new("dbus-send").args(&[
                             OsString::from("--session"),
                             OsString::from("--print-reply"),
                             OsString::from("--dest=org.freedesktop.FileManager1"),
@@ -238,7 +238,7 @@ impl Ui {
                             path.push("explorer.exe");
                             path
                         }) {
-                            async_std::process::Command::new(explorer).args(&[
+                            std::process::Command::new(explorer).args(&[
                                 {
                                     let mut s = OsString::from("/select,");
                                     s.push(&p);
