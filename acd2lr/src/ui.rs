@@ -58,7 +58,7 @@ impl Ui {
         statusbar: &Statusbar,
         file_list: &gio::ListStore,
         progress: &ProgressBar,
-        button_apply: &Button,
+        controls: &impl gtk::WidgetExt,
     ) {
         match item {
             Message::Status(message) => {
@@ -133,10 +133,10 @@ impl Ui {
             Message::ProgressUpdate { current, total } => {
                 if current == total {
                     progress.set_fraction(0.);
-                    button_apply.set_sensitive(true);
+                    controls.set_sensitive(true);
                 } else {
                     progress.set_fraction(current as f64 / total as f64);
-                    button_apply.set_sensitive(false);
+                    controls.set_sensitive(false);
                 }
             }
         }
@@ -279,9 +279,10 @@ impl Ui {
             let ui = self.clone();
             let statusbar: Statusbar = builder.get_object("statusbar").unwrap();
             let progress: ProgressBar = builder.get_object("progressbar").unwrap();
+            let box_: gtk::Box = builder.get_object("box_controls").unwrap();
 
             move |item| {
-                ui.handle_message(item, &statusbar, &list, &progress, &button_apply);
+                ui.handle_message(item, &statusbar, &list, &progress, &box_);
                 glib::Continue(true)
             }
         });
