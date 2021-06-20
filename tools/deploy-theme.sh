@@ -8,7 +8,6 @@ ARCHIVE="$1" ; shift
 
 # Fetch the theme files
 THEME_PATH="$TARGET_DIR/share/themes/$THEME_NAME/gtk-3.0"
-rm -rf "$THEME_PATH"
 mkdir -p "$THEME_PATH"
 
 if [[ $ARCHIVE == *.tar.* ]]; then
@@ -27,7 +26,6 @@ fi
 
 # Write the settings file
 ETC_PATH="$TARGET_DIR/etc/gtk-3.0"
-rm -rf "$ETC_PATH"
 mkdir -p "$ETC_PATH"
 
 cat >"$ETC_PATH/settings.ini" <<EOT
@@ -37,14 +35,13 @@ EOT
 
 # Deploy the icons
 ICONS_PATH="$TARGET_DIR/share/icons"
-rm -rf "$ICONS_PATH"
 mkdir -p "$ICONS_PATH"
 for THEME_NAME in Adwaita hicolor; do
 	for SOURCE_LOC in "$MINGW_PREFIX/share/icons"; do
 		if [ -d "$SOURCE_LOC/$THEME_NAME" ]; then
-			rsync --exclude="cursors" --exclude="512x512" --exclude="256x256" \
-				--exclude="scalable*/" --exclude="apps/" \
-				-av "$SOURCE_LOC/$THEME_NAME" "$ICONS_PATH"
+			tar --exclude="cursors" --exclude="512x512" --exclude="256x256" \
+				--exclude="scalable" --exclude="apps" --exclude="scalable-up-to-32" \
+				-C "$SOURCE_LOC" -c "$THEME_NAME" | tar -C "$ICONS_PATH" -xv
 			gtk-update-icon-cache "$ICONS_PATH/$THEME_NAME"
 			break
 		fi
@@ -53,5 +50,7 @@ done
 
 # Deploy the strings
 LOCALE_PATH="$TARGET_DIR/share/locale"
-rm -rf "$LOCALE_PATH"
-rsync -avm "$MINGW_PREFIX/share/locale/fr" "$LOCALE_PATH/"
+for LNG in fr; do
+	mkdir -p "$LOCALE_PATH/$LNG"
+	cp -rv "$MINGW_PREFIX/share/locale/$LNG" "$LOCALE_PATH"
+done

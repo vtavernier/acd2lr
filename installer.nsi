@@ -1,6 +1,10 @@
-;NSIS Modern User Interface
-;Basic Example Script
-;Written by Joost Verburg
+; Required defines:
+; ROOT
+; INSTALLSIZE
+; OUTFILE
+; VERSIONMAJOR
+; VERSIONMINOR
+; VERSIONBUILD
 
 ;--------------------------------
 ;Include Modern UI
@@ -13,15 +17,12 @@
 !define SHORTNAME "acd2lr"
 !define COMPANYNAME "Vincent Tavernier"
 !define DESCRIPTION "ACDSee to Lightroom metadata converter"
-!define VERSIONMAJOR 0
-!define VERSIONMINOR 1
-!define VERSIONBUILD 0
 !define ABOUTURL "https://vtavernier.github.io/"
 
 ;Name and file
 Name "${APPNAME}"
 Icon "acd2lr/app.ico"
-OutFile "installer.exe"
+OutFile "${OUTFILE}"
 Unicode True
 
 ;Default installation folder
@@ -64,10 +65,10 @@ Section $(TITLE_SecMainProgram) SecMainProgram
 
   SetOutPath "$INSTDIR"
 
-  File /r target/x86_64-pc-windows-gnu/release/bin
-  File /r target/x86_64-pc-windows-gnu/release/etc
-  File /r target/x86_64-pc-windows-gnu/release/lib
-  File /r target/x86_64-pc-windows-gnu/release/share
+  File /r ${ROOT}/bin
+  File /r ${ROOT}/etc
+  File /r ${ROOT}/lib
+  File /r ${ROOT}/share
 
   ;Store installation folder
   WriteRegStr HKCU "Software\${SHORTNAME}" "" $INSTDIR
